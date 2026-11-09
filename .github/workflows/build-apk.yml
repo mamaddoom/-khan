@@ -1,0 +1,58 @@
+name: Build and Release Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.6'
+
+      - name: Build APK with Gradle
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TobaccoPOS-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+      - name: Create GitHub Release with APK Link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0-build${{ github.run_number }}
+          name: Tobacco POS v1.0.0 (Build #${{ github.run_number }})
+          draft: false
+          prerelease: false
+          body: |
+            ### دانلود مستقیم اپلیکیشن مدیریت و صندوق دخانیات (Tobacco POS)
+            فایل نصب اندروید (APK) با موفقیت تولید شد.
+
+            #### امکانات این نسخه:
+            - اسکن بارکد با Google ML Kit (پشتیبانی از EAN-13 پاکت‌های سیگار و تنباکو)
+            - آنالیز تصویر پاکت و متن‌خوانی OCR برای استخراج خودکار برند و قیمت چاپی
+            - سینک محلی چندگوشی با وای‌فای (NSD) و بلوتوث (RFCOMM)
+            - فروش باکسی و بسته‌ای
+            - محاسبه سود ناخالص و خالص و گزارش‌گیری مالی
+          files: app/build/outputs/apk/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
