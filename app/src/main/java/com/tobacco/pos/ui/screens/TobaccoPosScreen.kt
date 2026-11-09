@@ -56,7 +56,7 @@ fun TobaccoPosScreen(
                 },
                 actions = {
                     IconButton(onClick = onScanRequested) {
-                        Icon(Icons.Default.Search, contentDescription = "اسکن بارکد / بسته")
+                        Text("📷", fontSize = 22.sp)
                     }
                     IconButton(onClick = { cartManager.clear() }) {
                         Icon(Icons.Default.Delete, contentDescription = "پاک کردن فاکتور")
@@ -66,6 +66,16 @@ fun TobaccoPosScreen(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
                 )
             )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = onScanRequested,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("📷 اسکن بارکد با دوربین", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            }
         },
         bottomBar = {
             // نوار پایین: تسویه حساب و نمایش سود
@@ -175,7 +185,13 @@ fun TobaccoPosScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text("سبد خرید خالی است", color = Color.Gray)
-                        Text("بارکد پاکت سیگار را اسکن کنید یا از بالا انتخاب کنید", fontSize = 12.sp, color = Color.Gray)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = onScanRequested,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("📷 باز کردن دوربین و اسکن بارکد")
+                        }
                     }
                 }
             } else {

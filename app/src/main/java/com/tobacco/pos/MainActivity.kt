@@ -184,6 +184,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainAppContainer() {
         var currentTab by remember { mutableIntStateOf(0) }
+        var isCameraOpen by remember { mutableStateOf(false) }
         val products by database.productDao().getAllProducts().collectAsState(initial = emptyList())
         val favorites by database.productDao().getFavoriteProducts().collectAsState(initial = emptyList())
 
@@ -211,65 +212,104 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        Scaffold(
-            bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = currentTab == 0,
-                        onClick = { currentTab = 0 },
-                        icon = { Icon(Icons.Default.ShoppingCart, contentDescription = null) },
-                        label = { Text("صندوق") }
-                    )
-                    NavigationBarItem(
-                        selected = currentTab == 1,
-                        onClick = { currentTab = 1 },
-                        icon = { Icon(Icons.Default.List, contentDescription = null) },
-                        label = { Text("انبار و کالاها") }
-                    )
-                    NavigationBarItem(
-                        selected = currentTab == 2,
-                        onClick = { currentTab = 2 },
-                        icon = { Icon(Icons.Default.DateRange, contentDescription = null) },
-                        label = { Text("گزارش سود") }
-                    )
+        if (isCameraOpen) {
+            com.tobacco.pos.ui.camera.CameraScannerScreen(
+                title = "دوربین اسکنر بارکد و بسته",
+                onResultFound = { result ->
+                    val barcode = result.detectedBarcode
+                    if (barcode != null) {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            val matched = database.productDao().getProductByBarcode(barcode)
+                            withContext(Dispatchers.Main) {
+                                if (matched != null) {
+                                    cartManager.addProduct(matched)
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "اسکن شد: ${matched.name} (+۱)",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    // کالای جدیدی که هنوز ثبت نشده
+                                    val newName = result.recognizedBrandOrName ?: "سیگار جدید ($barcode)"
+                                    val newPrice = result.extractedConsumerPrice ?: 0L
+                                    val newProduct = Product(
+                                        barcode = barcode,
+                                        name = newName,
+                                        buyPrice = (newPrice * 0.85).toLong(),
+                                        sellPrice = newPrice,
+                                        stockUnits = 10,
+                                        isFavorite = true
+                                    )
+                                    database.productDao().insertOrUpdate(newProduct)
+                                    cartManager.addProduct(newProduct)
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "کالای جدید ثبت و به سبد افزوده شد: $newName",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        }
+                    }
+                },
+                onClose = { isCameraOpen = false }
+            )
+        } else {
+            Scaffold(
+                bottomBar = {
+                    NavigationBar {
+                        NavigationBarItem(
+                            selected = currentTab == 0,
+                            onClick = { currentTab = 0 },
+                            icon = { Icon(Icons.Default.ShoppingCart, contentDescription = null) },
+                            label = { Text("صندوق") }
+                        )
+                        NavigationBarItem(
+                            selected = currentTab == 1,
+                            onClick = { currentTab = 1 },
+                            icon = { Icon(Icons.Default.List, contentDescription = null) },
+                            label = { Text("انبار و کالاها") }
+                        )
+                        NavigationBarItem(
+                            selected = currentTab == 2,
+                            onClick = { currentTab = 2 },
+                            icon = { Icon(Icons.Default.DateRange, contentDescription = null) },
+                            label = { Text("گزارش سود") }
+                        )
+                    }
                 }
-            }
-        ) { innerPadding ->
-            Surface(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                when (currentTab) {
-                    0 -> TobaccoPosScreen(
-                        cartManager = cartManager,
-                        favoriteProducts = favorites,
-                        onScanRequested = {
-                            // در تست دمو اولین محصول بارکددار اضافه می‌شود یا اسکنر باز می‌شود
-                            val demoProduct = products.firstOrNull()
-                            if (demoProduct != null) {
-                                cartManager.addProduct(demoProduct)
-                                Toast.makeText(this@MainActivity, "اسکن شد: ${demoProduct.name}", Toast.LENGTH_SHORT).show()
+            ) { innerPadding ->
+                Surface(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                    when (currentTab) {
+                        0 -> TobaccoPosScreen(
+                            cartManager = cartManager,
+                            favoriteProducts = favorites,
+                            onScanRequested = {
+                                isCameraOpen = true
+                            },
+                            onCheckoutComplete = { paymentType, customer ->
+                                checkoutCart(paymentType, customer)
                             }
-                        },
-                        onCheckoutComplete = { paymentType, customer ->
-                            checkoutCart(paymentType, customer)
-                        }
-                    )
-                    1 -> ProductManagementScreen(
-                        products = products,
-                        onSaveProduct = { p ->
-                            lifecycleScope.launch(Dispatchers.IO) {
-                                database.productDao().insertOrUpdate(p)
+                        )
+                        1 -> ProductManagementScreen(
+                            products = products,
+                            onSaveProduct = { p ->
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    database.productDao().insertOrUpdate(p)
+                                }
+                            },
+                            onDeleteProduct = { id ->
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    database.productDao().softDelete(id)
+                                }
                             }
-                        },
-                        onDeleteProduct = { id ->
-                            lifecycleScope.launch(Dispatchers.IO) {
-                                database.productDao().softDelete(id)
-                            }
-                        }
-                    )
-                    2 -> ReportDashboardScreen(
-                        report = reportData,
-                        selectedPeriod = selectedPeriod,
-                        onPeriodSelected = { selectedPeriod = it }
-                    )
+                        )
+                        2 -> ReportDashboardScreen(
+                            report = reportData,
+                            selectedPeriod = selectedPeriod,
+                            onPeriodSelected = { selectedPeriod = it }
+                        )
+                    }
                 }
             }
         }
