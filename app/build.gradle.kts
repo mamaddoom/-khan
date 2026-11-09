@@ -76,13 +76,6 @@ dependencies {
     implementation(libs.mlkit.barcode.scanning)
     implementation(libs.mlkit.text.recognition)
 
-    // Local Sync (Ktor embedded server + WebSocket)
-    implementation(libs.ktor.server.core)
-    implementation(libs.ktor.server.netty)
-    implementation(libs.ktor.server.websockets)
-    implementation(libs.ktor.client.websockets)
-    implementation(libs.ktor.client.cio)
-
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 }

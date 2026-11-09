@@ -56,10 +56,10 @@ fun TobaccoPosScreen(
                 },
                 actions = {
                     IconButton(onClick = onScanRequested) {
-                        Icon(Icons.Default.QrCodeScanner, contentDescription = "اسکن بارکد / بسته")
+                        Icon(Icons.Default.Search, contentDescription = "اسکن بارکد / بسته")
                     }
                     IconButton(onClick = { cartManager.clear() }) {
-                        Icon(Icons.Default.DeleteOutline, contentDescription = "پاک کردن فاکتور")
+                        Icon(Icons.Default.Delete, contentDescription = "پاک کردن فاکتور")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -108,7 +108,7 @@ fun TobaccoPosScreen(
                         enabled = cartItems.isNotEmpty(),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Icon(Icons.Default.Payment, contentDescription = null)
+                        Icon(Icons.Default.Check, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("تسویه و ثبت فاکتور", fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
@@ -168,7 +168,7 @@ fun TobaccoPosScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
-                            Icons.Default.ShoppingBag,
+                            Icons.Default.ShoppingCart,
                             contentDescription = null,
                             modifier = Modifier.size(64.dp),
                             tint = Color.Gray.copy(alpha = 0.5f)
@@ -212,7 +212,7 @@ fun TobaccoPosScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.CreditCard, contentDescription = null)
+                        Icon(Icons.Default.Check, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("پرداخت با کارتخوان")
                     }
@@ -225,7 +225,7 @@ fun TobaccoPosScreen(
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
                     ) {
-                        Icon(Icons.Default.AttachMoney, contentDescription = null)
+                        Icon(Icons.Default.Done, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("دریافت نقدی")
                     }
@@ -237,7 +237,7 @@ fun TobaccoPosScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.AccountBalanceWallet, contentDescription = null)
+                        Icon(Icons.Default.AccountBox, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("ثبت نسیه (حساب مشتری)")
                     }
@@ -294,7 +294,7 @@ fun CartItemRow(
             // کلیدهای افزایش/کاهش تعداد
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onDecrement, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.RemoveCircleOutline, contentDescription = "کم کردن")
+                    Icon(Icons.Default.Clear, contentDescription = "کم کردن")
                 }
                 Text(
                     persianFormat.format(item.quantity),
@@ -303,7 +303,7 @@ fun CartItemRow(
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
                 IconButton(onClick = onIncrement, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.AddCircleOutline, contentDescription = "اضافه کردن")
+                    Icon(Icons.Default.Add, contentDescription = "اضافه کردن")
                 }
             }
         }

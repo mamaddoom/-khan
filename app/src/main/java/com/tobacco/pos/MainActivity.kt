@@ -217,19 +217,19 @@ class MainActivity : ComponentActivity() {
                     NavigationBarItem(
                         selected = currentTab == 0,
                         onClick = { currentTab = 0 },
-                        icon = { Icon(Icons.Default.PointOfSale, contentDescription = null) },
+                        icon = { Icon(Icons.Default.ShoppingCart, contentDescription = null) },
                         label = { Text("صندوق") }
                     )
                     NavigationBarItem(
                         selected = currentTab == 1,
                         onClick = { currentTab = 1 },
-                        icon = { Icon(Icons.Default.Inventory2, contentDescription = null) },
+                        icon = { Icon(Icons.Default.List, contentDescription = null) },
                         label = { Text("انبار و کالاها") }
                     )
                     NavigationBarItem(
                         selected = currentTab == 2,
                         onClick = { currentTab = 2 },
-                        icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                        icon = { Icon(Icons.Default.DateRange, contentDescription = null) },
                         label = { Text("گزارش سود") }
                     )
                 }
