@@ -26,13 +26,21 @@ jobs:
       - name: Restore signing key
         env:
           KS: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+          # SHA-256 of the app's signing certificate (public information, not a secret)
+          EXPECTED: 07:1E:D9:52:4B:8F:20:70:9B:7F:14:4E:95:13:1B:86:21:31:47:F2:E6:F1:86:2D:F0:6E:DA:1A:0C:5E:F7:0D
         run: |
-          if [ -n "$KS" ]; then
-            mkdir -p ~/.android
-            echo "$KS" | base64 -d > ~/.android/debug.keystore
-          else
-            echo "::warning::DEBUG_KEYSTORE_BASE64 secret is missing; APK is signed with a random key and cannot update installed apps"
+          if [ -z "$KS" ]; then
+            echo "::error::Secret DEBUG_KEYSTORE_BASE64 is missing. Without it the APK gets a random key and cannot update installed apps."
+            exit 1
           fi
+          printf '%s' "$KS" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/mozkhan.keystore"
+          FP=$(keytool -list -v -keystore "$RUNNER_TEMP/mozkhan.keystore" -storepass android 2>/dev/null | sed -n 's/^[[:space:]]*SHA256: //p' | head -n1)
+          echo "keystore certificate SHA-256: $FP"
+          if [ "$FP" != "$EXPECTED" ]; then
+            echo "::error::DEBUG_KEYSTORE_BASE64 holds a different key than the installed apps use (got '$FP'). Re-create the secret from the original debug.keystore."
+            exit 1
+          fi
+          echo "MOZKHAN_KEYSTORE=$RUNNER_TEMP/mozkhan.keystore" >> "$GITHUB_ENV"
 
       # unit tests include the Room v2 -> v3 migration test (Robolectric, no device needed)
       - name: Unit + migration tests
