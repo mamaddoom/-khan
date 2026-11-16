@@ -27,6 +27,15 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import kotlinx.coroutines.delay
@@ -176,7 +185,12 @@ fun AppRoot(vm: MainVm, activity: Activity) {
         },
     ) { pad ->
         PullToRefreshBox(isRefreshing = refreshing, onRefresh = onPullRefresh, modifier = Modifier.padding(pad).statusBarsPadding()) {
-        NavHost(nav, startDestination = "home", modifier = Modifier) {
+        NavHost(
+            nav, startDestination = "home", modifier = Modifier,
+            // no 700ms cross-fade between screens: switching tabs is instant
+            enterTransition = { EnterTransition.None }, exitTransition = { ExitTransition.None },
+            popEnterTransition = { EnterTransition.None }, popExitTransition = { ExitTransition.None },
+        ) {
             composable("home") {
                 HomeScreen(vm, onGo = { nav.goTab(it) }, onNew = { if (salesOnly) deny() else nav.navigate(editRoute()) })
             }
@@ -213,6 +227,14 @@ fun AppRoot(vm: MainVm, activity: Activity) {
                 )
             }
         }
+        // tiny server-status dot: green = connected, red = error, gray = sync off
+        val ss by vm.sync.state.collectAsState()
+        val dot = when {
+            ss.error != null -> Color(0xFFE53935)
+            ss.running -> Color(0xFF2ECC71)
+            else -> Color(0xFF9E9E9E)
+        }
+        Box(Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 6.dp).size(7.dp).clip(CircleShape).background(dot))
         }
     }
 }
