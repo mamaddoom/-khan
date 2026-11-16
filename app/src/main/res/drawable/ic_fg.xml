@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+
+    <!-- scan frame corners -->
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round"
+        android:pathData="M30,42 L30,30 L42,30"/>
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round"
+        android:pathData="M66,30 L78,30 L78,42"/>
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineCap="round"
+        android:pathData="M30,66 L30,78 L42,78"/>
+
+    <!-- barcode -->
+    <path android:fillColor="#FFFFFF" android:pathData="M37,38h3v28h-3z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M43,38h1.5v28h-1.5z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M48,38h4v28h-4z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M55,38h1.5v28h-1.5z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M59,38h3v28h-3z"/>
+
+    <!-- laser line -->
+    <path android:fillColor="#22D3EE" android:pathData="M28,50.5h50v3h-50z"/>
+
+    <!-- sale badge: cart -->
+    <path android:fillColor="#22D3EE" android:pathData="M74,59 a15,15 0 1,0 0.01,0z"/>
+    <group android:translateX="65.5" android:translateY="64.5" android:scaleX="0.72" android:scaleY="0.72">
+        <path android:fillColor="#0F172A"
+            android:pathData="M7,18c-1.1,0 -1.99,0.9 -1.99,2S5.9,22 7,22s2,-0.9 2,-2 -0.9,-2 -2,-2zM1,2v2h2l3.6,7.59 -1.35,2.45c-0.16,0.28 -0.25,0.61 -0.25,0.96 0,1.1 0.9,2 2,2h12v-2H7.42c-0.14,0 -0.25,-0.11 -0.25,-0.25l0.03,-0.12 0.9,-1.63h7.45c0.75,0 1.41,-0.41 1.75,-1.03l3.58,-6.49c0.08,-0.14 0.12,-0.31 0.12,-0.48 0,-0.55 -0.45,-1 -1,-1H5.21l-0.94,-2H1zM17,18c-1.1,0 -1.99,0.9 -1.99,2s0.89,2 1.99,2 2,-0.9 2,-2 -0.9,-2 -2,-2z"/>
+    </group>
+</vector>
