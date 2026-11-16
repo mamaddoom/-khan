@@ -16,23 +16,8 @@ jobs:
           distribution: 'temurin'
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
-      # unit tests include the Room v2 -> v3 migration test (Robolectric, no device needed)
-      - name: Unit + migration tests
-        run: ./gradlew :app:testDebugUnitTest
-      - name: Build release APK (R8 + MediaPipe rules are exercised here)
-        run: ./gradlew :app:assembleRelease
-      - uses: actions/upload-artifact@v4
-        with:
-<<<<<<< Updated upstream
-          name: MozKhan-release-apk
-          path: app/build/outputs/apk/release/*.apk
-# NOTE: every build is signed with the debug key of the machine it runs on. Phones can only UPDATE an installed copy
-# when it was signed with the SAME key, so install APKs that come from one build machine, or add a fixed keystore
-# (stored as a GitHub secret) before relying on CI builds for updates.
-=======
-          gradle-version: '8.6'
 
-      # Use the SAME signing key as the locally built APK, so builds from GitHub can update installed apps.
+      # Use the SAME signing key as the locally built APK, so APKs from GitHub can update the installed app.
       # Secret DEBUG_KEYSTORE_BASE64 = base64 of ~/.android/debug.keystore (never commit the keystore itself).
       - name: Restore signing key
         env:
@@ -42,36 +27,15 @@ jobs:
             mkdir -p ~/.android
             echo "$KS" | base64 -d > ~/.android/debug.keystore
           else
-            echo "::warning::DEBUG_KEYSTORE_BASE64 secret is missing; APK will be signed with a random key and cannot update installed apps"
+            echo "::warning::DEBUG_KEYSTORE_BASE64 secret is missing; APK is signed with a random key and cannot update installed apps"
           fi
 
-      - name: Build APK with Gradle
-        run: gradle assembleDebug --stacktrace
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
+      # unit tests include the Room v2 -> v3 migration test (Robolectric, no device needed)
+      - name: Unit + migration tests
+        run: ./gradlew :app:testDebugUnitTest
+      - name: Build release APK (R8 + MediaPipe rules are exercised here)
+        run: ./gradlew :app:assembleRelease
+      - uses: actions/upload-artifact@v4
         with:
-          name: TobaccoPOS-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-
-      - name: Create GitHub Release with APK Link
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v1.0.0-build${{ github.run_number }}
-          name: Tobacco POS v1.0.0 (Build #${{ github.run_number }})
-          draft: false
-          prerelease: false
-          body: |
-            ### دانلود مستقیم اپلیکیشن مدیریت و صندوق دخانیات (Tobacco POS)
-            فایل نصب اندروید (APK) با موفقیت تولید شد.
-
-            #### امکانات این نسخه:
-            - اسکن بارکد با Google ML Kit (پشتیبانی از EAN-13 پاکت‌های سیگار و تنباکو)
-            - آنالیز تصویر پاکت و متن‌خوانی OCR برای استخراج خودکار برند و قیمت چاپی
-            - سینک محلی چندگوشی با وای‌فای (NSD) و بلوتوث (RFCOMM)
-            - فروش باکسی و بسته‌ای
-            - محاسبه سود ناخالص و خالص و گزارش‌گیری مالی
-          files: app/build/outputs/apk/debug/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
->>>>>>> Stashed changes
+          name: MozKhan-release-apk
+          path: app/build/outputs/apk/release/*.apk
