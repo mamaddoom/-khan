@@ -96,6 +96,46 @@ class RepoTest {
         assertEquals(42L, noExport.moves[0].ts)
     }
 
+    @Test fun sellerNameIsSavedOnTheInvoiceAndSurvivesBackupRestore() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<Application>()
+        val prefs = Prefs(ctx)
+        prefs.deviceName = "  صندوق ۲ "
+        repo.saveProduct(Product("p", "بهمن", buyPrice = 90_000, sellPrice = 100_000, code = "10"), 10.0)
+        val sale = repo.checkout(listOf(CartLine(repo.byId("p")!!, 1.0, 100_000)), 0, "CASH")
+        assertEquals("صندوق ۲", db.sales().sale(sale.id)!!.deviceName)
+
+        val json = repo.exportJson()
+        assertEquals("صندوق ۲", BackupParser.parse(json).sales.single().deviceName)
+
+        // restore into an empty phone
+        val db2 = Room.inMemoryDatabaseBuilder(ctx, AppDb::class.java).allowMainThreadQueries().build()
+        try {
+            val repo2 = Repo(db2, prefs, CloudSync(ctx, db2, CoroutineScope(Dispatchers.Unconfined), prefs))
+            repo2.importJson(json)
+            assertEquals("صندوق ۲", db2.sales().sale(sale.id)!!.deviceName)
+            assertEquals(1, db2.sales().itemsOf(sale.id).size)
+        } finally {
+            db2.close()
+            prefs.deviceName = ""
+        }
+    }
+
+    @Test fun voidingIsAlwaysNewerThanTheInvoiceEvenWithABackwardClock() = runBlocking {
+        repo.saveProduct(Product("p", "بهمن", buyPrice = 90_000, sellPrice = 100_000, code = "10"), 10.0)
+        val sale = repo.checkout(listOf(CartLine(repo.byId("p")!!, 1.0, 100_000)), 0, "CASH")
+        // the invoice came from a phone whose clock is an hour ahead
+        db.sales().insertSale(sale.copy(updatedAt = sale.updatedAt + 3_600_000))
+        repo.voidSale(sale.id)
+        val v = db.sales().sale(sale.id)!!
+        assertTrue(v.voided)
+        assertTrue(v.updatedAt > sale.updatedAt + 3_600_000)
+    }
+
+    @Test fun backupFromOlderAppWithoutSellerName() {
+        val b = BackupParser.parse("""{"version":3,"sales":[{"id":"s","ts":5,"subtotal":10,"total":10,"cost":5}]}""")
+        assertEquals("", b.sales.single().deviceName)
+    }
+
     @Test fun newerBackupIsRefusedWithAClearMessage() {
         try {
             BackupParser.parse("""{"version":99}"""); fail()

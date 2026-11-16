@@ -256,9 +256,8 @@ private fun ExpenseDialog(cur: Currency, onDismiss: () -> Unit, onOk: (String, L
 
 @Composable
 private fun SaleDetailDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
-    var items by remember { mutableStateOf<List<SaleItem>>(emptyList()) }
+    val items by remember(s.id) { vm.repo.observeItemsOf(s.id) }.collectAsState(initial = emptyList<SaleItem>())
     var confirm by remember { mutableStateOf(false) }
-    LaunchedEffect(s.id) { items = vm.repo.itemsOf(s.id) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("فاکتور " + Jalali.dateTime(s.ts)) },

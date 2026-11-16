@@ -227,7 +227,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
     suspend fun voidPurchase(docId: String) {
         val d = db.stock().doc(docId) ?: return
         if (d.voided || d.kind != "PURCHASE") return
-        val now = System.currentTimeMillis()
+        val now = maxOf(System.currentTimeMillis(), d.updatedAt + 1)
         val rev = db.stock().movesOf(docId).filter { it.reason == "PURCHASE" }.map { StockMove(newId(), it.productId, -it.qty, "ADJUST", docId, now, it.unitCost) }
         db.withTransaction {
             db.stock().voidDoc(docId, now)
@@ -302,8 +302,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
             db.sales().insertItems(items)
             db.stock().insertAll(moves)
         }
-        sync.push(sale, items)
-        moves.forEach { sync.push(it) }
+        // invoice, lines and stock moves go up together (one atomic batch): the other phone never sees half an invoice
+        sync.push(sale, items, moves)
         return sale
     }
 
@@ -311,18 +311,19 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
     suspend fun voidSale(id: String) {
         val s = db.sales().sale(id) ?: return
         if (s.voided) return
-        val now = System.currentTimeMillis()
+        // strictly newer than the stored row even when this phone's clock is behind the phone that made the invoice
+        val now = maxOf(System.currentTimeMillis(), s.updatedAt + 1)
         val moves = db.stock().movesOf(id).filter { it.reason == "SALE" || it.reason == "CONSUME" }
             .map { StockMove(newId(), it.productId, -it.qty, "RETURN", id, now, it.unitCost) }
         db.withTransaction {
             db.sales().markVoided(id, now)
             db.stock().insertAll(moves)
         }
-        sync.push(s.copy(voided = true, updatedAt = now), emptyList())
-        moves.forEach { sync.push(it) }
+        sync.push(s.copy(voided = true, updatedAt = now), emptyList(), moves)
     }
 
     suspend fun itemsOf(saleId: String) = db.sales().itemsOf(saleId)
+    fun observeItemsOf(saleId: String) = db.sales().observeItemsOf(saleId)
     fun recentSales(n: Int) = db.sales().observeRecent(n)
     fun sales(from: Long, to: Long) = db.sales().observeSales(from, to)
     fun totals(from: Long, to: Long) = db.sales().observeTotals(from, to)
@@ -503,6 +504,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         }
         // old files have no codes / kinds: repair, then re-upload what changed
         ensureCodes()
+        // restored rows exist only on this phone: upload what the cloud lacks (no-op while sync is off)
+        sync.syncNow()
     }
 
     companion object { const val BACKUP_VERSION = 3 }
