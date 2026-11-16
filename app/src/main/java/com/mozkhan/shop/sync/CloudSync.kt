@@ -406,12 +406,12 @@ private fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s(
 
 private fun Sale.toMap(): Map<String, Any?> = mapOf(
     "id" to id, "ts" to ts, "subtotal" to subtotal, "discount" to discount, "total" to total, "cost" to cost,
-    "payment" to payment, "note" to note, "voided" to voided, "updatedAt" to updatedAt, "customerId" to customerId,
+    "payment" to payment, "note" to note, "voided" to voided, "updatedAt" to updatedAt, "customerId" to customerId, "deviceName" to deviceName,
 )
 
 private fun Map<String, Any?>.toSale() = Sale(
     id = s("id"), ts = l("ts"), subtotal = l("subtotal"), discount = l("discount"), total = l("total"), cost = l("cost"),
-    payment = s("payment", "CASH"), note = s("note"), voided = b("voided"), updatedAt = l("updatedAt"), customerId = sn("customerId"),
+    payment = s("payment", "CASH"), note = s("note"), voided = b("voided"), updatedAt = l("updatedAt"), customerId = sn("customerId"), deviceName = s("deviceName"),
 ).also { require(it.id.isNotEmpty()) }
 
 private fun SaleItem.toMap(): Map<String, Any?> = mapOf(

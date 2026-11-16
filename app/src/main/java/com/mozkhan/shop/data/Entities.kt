@@ -105,6 +105,8 @@ data class Sale(
     val voided: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
     val customerId: String? = null,
+    /** name of the phone that made this invoice (set in Settings; shown as the seller) */
+    @ColumnInfo(defaultValue = "") val deviceName: String = "",
 )
 
 @Entity(tableName = "sale_items", indices = [Index("saleId"), Index("productId")])

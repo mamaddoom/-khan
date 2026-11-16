@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -92,6 +93,15 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "بازگشت") }
             Text("تنظیمات", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        Group("نام این گوشی (فروشنده)") {
+            var devName by remember { mutableStateOf(prefs.deviceName) }
+            OutlinedTextField(
+                value = devName, onValueChange = { devName = it; prefs.deviceName = it }, singleLine = true,
+                label = { Text("مثلاً: صندوق ۱ / علی") }, modifier = Modifier.fillMaxWidth(),
+            )
+            Text("این نام روی هر فاکتوری که با این گوشی ثبت شود به‌عنوان فروشنده ذخیره و نمایش داده می‌شود و با همگام‌سازی روی همهٔ گوشی‌ها دیده می‌شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         Group("نقش این گوشی") {

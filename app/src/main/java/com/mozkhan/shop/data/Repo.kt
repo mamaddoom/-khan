@@ -284,7 +284,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         val disc = discount.coerceIn(0, subtotal)
         val sale = Sale(
             id, now, subtotal, disc, subtotal - disc, items.sumOf { it.lineCost }, payment, note,
-            false, now, if (payment == "CREDIT") customerId else null,
+            false, now, if (payment == "CREDIT") customerId else null, prefs.deviceName,
         )
         val moves = ArrayList<StockMove>()
         lines.forEachIndexed { i, l ->
@@ -436,7 +436,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
             db.sales().allSales().forEach {
                 put(JSONObject().put("id", it.id).put("ts", it.ts).put("subtotal", it.subtotal).put("discount", it.discount)
                     .put("total", it.total).put("cost", it.cost).put("payment", it.payment).put("note", it.note)
-                    .put("voided", it.voided).put("updatedAt", it.updatedAt).put("customerId", it.customerId ?: JSONObject.NULL))
+                    .put("voided", it.voided).put("updatedAt", it.updatedAt).put("customerId", it.customerId ?: JSONObject.NULL).put("deviceName", it.deviceName))
             }
         })
         o.put("items", JSONArray().apply {
@@ -550,7 +550,7 @@ object BackupParser {
         val sales = arr("sales").map {
             Sale(it.getString("id"), it.ts(), it.optLong("subtotal"), it.optLong("discount"), it.optLong("total"),
                 it.optLong("cost"), it.optString("payment", "CASH"), it.optString("note", ""), it.optBoolean("voided"), it.upd(),
-                it.str("customerId"))
+                it.str("customerId"), it.optString("deviceName", ""))
         }
         val items = arr("items").map {
             SaleItem(it.getString("id"), it.getString("saleId"), it.getString("productId"), it.optString("name", ""),

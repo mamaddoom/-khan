@@ -69,6 +69,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("last_category", "") ?: ""
         set(v) { sp.edit().putString("last_category", v).apply() }
 
+    /** name of this phone, set by hand in Settings; printed on every invoice as the seller */
+    var deviceName: String
+        get() = sp.getString("device_name", "") ?: ""
+        set(v) { sp.edit().putString("device_name", v.trim()).apply() }
+
     /** "sales only" phone: it can sell, take payments and record expenses, but not define/edit goods (kept per phone, never synced) */
     private val _salesOnly = MutableStateFlow(sp.getBoolean("sales_only", false))
     val salesOnly: StateFlow<Boolean> = _salesOnly.asStateFlow()

@@ -279,7 +279,7 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         Product::class, StockMove::class, StockDoc::class, Sale::class, SaleItem::class,
         Expense::class, Customer::class, CreditPayment::class, RecipeItem::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -297,9 +297,16 @@ abstract class AppDb : RoomDatabase() {
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx, AppDb::class.java, "shop.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                 // Only the throw-away v1 test database may ever be dropped. Never allow this for v2 or later.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
+    }
+}
+
+/** v3 -> v4: invoices remember which phone (seller) made them */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumn("sales", "deviceName", "TEXT NOT NULL DEFAULT ''")
     }
 }
