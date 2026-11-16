@@ -30,6 +30,16 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
+    // CI points MOZKHAN_KEYSTORE at the shared signing key (GitHub secret) so every build carries the same certificate
+    signingConfigs {
+        val ks = System.getenv("MOZKHAN_KEYSTORE")
+        if (!ks.isNullOrEmpty() && file(ks).exists()) {
+            getByName("debug") {
+                storeFile = file(ks); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
