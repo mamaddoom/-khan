@@ -288,15 +288,21 @@ fun ProductEditScreen(
                 )
                 val delta = if (trackStock) Fmt.parseDouble(stockIn) * factor else 0.0
                 // written directly (not fire-and-forget) so the guard stays up until the row really exists
-                if (raw == null) {
-                    vm.repo.saveProduct(p, if (delta != 0.0) delta else null, openingIsPurchase)
-                    if (!coffeeBulk && !coffeeCup) vm.prefs.lastCategory = p.category
-                } else {
-                    vm.repo.saveProduct(p, null)
-                    if (delta != 0.0) vm.repo.adjustStock(p.id, delta, "ADJUST")
+                val isNew = raw == null
+                val asPurchase = openingIsPurchase
+                vm.persist {
+                    if (isNew) {
+                        vm.repo.saveProduct(p, if (delta != 0.0) delta else null, asPurchase)
+                        if (!coffeeBulk && !coffeeCup) vm.prefs.lastCategory = p.category
+                    } else {
+                        vm.repo.saveProduct(p, null)
+                        if (delta != 0.0) vm.repo.adjustStock(p.id, delta, "ADJUST")
+                    }
                 }
                 dirty = false
                 onClose()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e // the screen was closed: the save itself still finishes (vm.persist)
             } catch (e: Exception) {
                 error = "ذخیره نشد: ${e.message}"
             } finally {

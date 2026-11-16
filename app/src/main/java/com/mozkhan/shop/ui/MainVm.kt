@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
@@ -113,6 +114,13 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         _error.value = e.message ?: "خطای غیرمنتظره"
     }
     fun launch(block: suspend () -> Unit) = viewModelScope.launch(handler) { block() }
+
+    /**
+     * Runs a multi-step write in the ViewModel scope and waits for it. A screen's own coroutine scope is cancelled as soon
+     * as the screen leaves the composition ("The coroutine scope left the composition"): a save started there could stop
+     * half way (e.g. a drink saved without its recipe). Here only the waiting is cancelled, never the write.
+     */
+    suspend fun <T> persist(block: suspend () -> T): T = viewModelScope.async { block() }.await()
 
     val currency = prefs.currency
 
@@ -340,7 +348,23 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     /** null = everything, otherwise DEPT_SHOP / DEPT_CAFE */
     val dept = MutableStateFlow<String?>(null)
 
-    val range: StateFlow<DateRange> = combine(period, offset, customFrom, customTo) { p, o, f, t ->
+    /**
+     * Start of the current day. It ticks over at midnight, so "today / this week / this month" really move on in a register
+     * that stays open for days (before, the report kept the range of the day the app was opened and new invoices
+     * - this phone's and the synced ones - fell outside it).
+     */
+    private val dayStart = MutableStateFlow(Jalali.startOfDay(System.currentTimeMillis()))
+
+    init {
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(30_000)
+                dayStart.value = Jalali.startOfDay(System.currentTimeMillis())
+            }
+        }
+    }
+
+    val range: StateFlow<DateRange> = combine(period, offset, customFrom, customTo, dayStart) { p, o, f, t, _ ->
         if (p == Period.CUSTOM) {
             val a = minOf(f, t)
             val b = maxOf(f, t)
@@ -479,7 +503,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     fun creditSales(customerId: String) = repo.creditSales(customerId)
 
     // ------------------------------------------------------------------ home
-    private val today = MutableStateFlow(Jalali.startOfDay(System.currentTimeMillis()))
+    private val today = dayStart
     val todayTotals: StateFlow<Totals> = today.flatMapLatest { repo.totals(it, it + 86_400_000L - 1) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), Totals(0, 0, 0))
     val todayExpenses: StateFlow<Long> = today.flatMapLatest { repo.expenseSum(it, it + 86_400_000L - 1) }
@@ -489,7 +513,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val recent: StateFlow<List<Sale>> = repo.recentSales(6)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun refreshToday() { today.value = Jalali.startOfDay(System.currentTimeMillis()) }
+    fun refreshToday() { dayStart.value = Jalali.startOfDay(System.currentTimeMillis()) }
 
     fun voidSale(id: String) = launch { repo.voidSale(id) }
     fun addExpense(title: String, amount: Long) = launch { repo.addExpense(title, amount) }

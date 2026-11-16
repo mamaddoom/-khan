@@ -4,6 +4,7 @@ import androidx.room.testing.MigrationTestHelper
 import androidx.test.platform.app.InstrumentationRegistry
 import com.mozkhan.shop.data.AppDb
 import com.mozkhan.shop.data.MIGRATION_2_3
+import com.mozkhan.shop.data.MIGRATION_3_4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -57,6 +58,45 @@ class MigrationTest {
         m.query("SELECT code FROM products").use { c -> while (c.moveToNext()) codes.add(c.getString(0)) }
         assertEquals(3, codes.toSet().size)
         assertTrue(codes.all { it.toInt() in 1001..1003 })
+    }
+
+    @Test
+    fun migrate3To4_addsEmptyDeviceNameAndKeepsInvoices() {
+        val db = helper.createDatabase("mig34.db", 3)
+        db.execSQL("INSERT INTO sales (id,ts,subtotal,discount,total,cost,payment,note,voided,updatedAt,customerId) VALUES ('s1',20,300000,0,300000,270000,'CASH','',0,20,NULL)")
+        db.execSQL("INSERT INTO sales (id,ts,subtotal,discount,total,cost,payment,note,voided,updatedAt,customerId) VALUES ('s2',30,50000,0,50000,40000,'CREDIT','x',1,31,'c1')")
+        db.execSQL("INSERT INTO sale_items (id,saleId,productId,name,qty,isWeight,unitPrice,unitCost,category,dept) VALUES ('i1','s1','p1','بهمن',3,0,100000,90000,'سیگار','SHOP')")
+        db.close()
+
+        val m = helper.runMigrationsAndValidate("mig34.db", 4, true, MIGRATION_3_4)
+
+        m.query("SELECT COUNT(*) FROM sales").use { c -> c.moveToFirst(); assertEquals(2, c.getInt(0)) }
+        m.query("SELECT COUNT(*) FROM sale_items").use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+        m.query("SELECT deviceName, voided, customerId, total FROM sales WHERE id='s2'").use { c ->
+            c.moveToFirst()
+            assertEquals("", c.getString(0))
+            assertEquals(1, c.getInt(1))
+            assertEquals("c1", c.getString(2))
+            assertEquals(50000L, c.getLong(3))
+        }
+        // a new row written by the v4 app (without naming the column) still gets the default
+        m.execSQL("INSERT INTO sales (id,ts,subtotal,discount,total,cost,payment,note,voided,updatedAt,customerId) VALUES ('s3',40,1,0,1,0,'CASH','',0,40,NULL)")
+        m.query("SELECT deviceName FROM sales WHERE id='s3'").use { c -> c.moveToFirst(); assertEquals("", c.getString(0)) }
+    }
+
+    @Test
+    fun migrate2To4_fullChain() {
+        val db = helper.createDatabase("mig24.db", 2)
+        db.execSQL("INSERT INTO sales (id,ts,subtotal,discount,total,cost,payment,note,voided,updatedAt,customerId) VALUES ('s1',20,300000,0,300000,270000,'CASH','',0,20,NULL)")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig24.db", 4, true, MIGRATION_2_3, MIGRATION_3_4)
+        m.query("SELECT deviceName FROM sales WHERE id='s1'").use { c -> c.moveToFirst(); assertEquals("", c.getString(0)) }
+    }
+
+    @Test
+    fun versionConstantMatchesDatabase() {
+        // AppDb.VERSION drives the pre-migration safety copy: it must follow the @Database version
+        assertEquals(4, AppDb.VERSION)
     }
 
     @Test

@@ -219,8 +219,10 @@ private fun IngredientDialog(vm: MainVm, item: ProductWithStock?, cur: Currency,
                             category = CAT_INGREDIENT, kind = KIND_INGREDIENT, trackStock = true,
                         )
                         val op = Fmt.parseDouble(opening) * factor
-                        vm.repo.saveProduct(p, if (item == null && op > 0) op else null)
+                        vm.persist { vm.repo.saveProduct(p, if (item == null && op > 0) op else null) }
                         onDismiss()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         error = "ذخیره نشد: ${e.message}"
                     } finally {
@@ -325,9 +327,15 @@ private fun DrinkEditor(vm: MainVm, drink: ProductWithStock?, cur: Currency, ing
                             name = name.trim(), category = category, sellPrice = sell, buyPrice = if (lines.isEmpty()) manualCost else 0,
                             unit = Measure.PIECE, trackStock = false, kind = KIND_DRINK, favorite = true,
                         )
-                        vm.repo.saveProduct(p)
-                        vm.repo.saveRecipe(p.id, lines.filter { Fmt.parseDouble(it.qty) > 0 }.map { it.ingredientId to Fmt.parseDouble(it.qty) })
+                        val recipe = lines.filter { Fmt.parseDouble(it.qty) > 0 }.map { it.ingredientId to Fmt.parseDouble(it.qty) }
+                        // product + recipe must both be written even if the editor closes meanwhile
+                        vm.persist {
+                            vm.repo.saveProduct(p)
+                            vm.repo.saveRecipe(p.id, recipe)
+                        }
                         onClose()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         error = "ذخیره نشد: ${e.message}"
                     } finally {
