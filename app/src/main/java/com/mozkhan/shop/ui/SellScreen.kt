@@ -101,6 +101,8 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
     var showCheckout by remember { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    // recomposes the overlay text when the image model finishes loading (or fails)
+    val modelVer by com.mozkhan.shop.ml.ImageFingerprint.changes.collectAsState()
 
     val subtotal = cart.sumOf { it.total }
     val cost = cart.sumOf { it.cost }
@@ -163,7 +165,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                             when {
                                 !visualOn -> "بارکد را جلوی دوربین بگیرید"
                                 !hasPrints -> "هنوز کالایی عکس مرجع ندارد: از صفحهٔ هر کالا چند عکس ثبت کنید"
-                                !com.mozkhan.shop.ml.ImageFingerprint.modelReady -> com.mozkhan.shop.ml.ImageFingerprint.status()
+                                modelVer >= 0 && !com.mozkhan.shop.ml.ImageFingerprint.modelReady -> com.mozkhan.shop.ml.ImageFingerprint.status()
                                 else -> "بارکد یا خود کالا را جلوی دوربین بگیرید"
                             },
                             color = Color.White, style = MaterialTheme.typography.labelMedium,
