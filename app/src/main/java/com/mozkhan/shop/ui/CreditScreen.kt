@@ -235,8 +235,7 @@ private fun PaymentDialog(cur: Currency, debt: Long, onDismiss: () -> Unit, onOk
 
 @Composable
 fun SaleLinesDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
-    var items by remember { mutableStateOf<List<com.mozkhan.shop.data.SaleItem>>(emptyList()) }
-    androidx.compose.runtime.LaunchedEffect(s.id) { items = vm.repo.itemsOf(s.id) }
+    val items by remember(s.id) { vm.repo.observeItemsOf(s.id) }.collectAsState(initial = emptyList<com.mozkhan.shop.data.SaleItem>())
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(Jalali.dateTime(s.ts)) },

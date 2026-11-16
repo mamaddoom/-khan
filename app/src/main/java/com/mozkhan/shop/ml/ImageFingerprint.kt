@@ -31,7 +31,12 @@ object ImageFingerprint {
     private const val EMB_DIM = 1024
 
     @Volatile private var embedder: ImageEmbedder? = null
+    private val _changes = kotlinx.coroutines.flow.MutableStateFlow(0)
+    /** Bumps whenever the model state changes: screens that show [status] collect it so the text never goes stale. */
+    val changes: kotlinx.coroutines.flow.StateFlow<Int> = _changes
+
     @Volatile private var initState = 0 // 0 not tried, 1 loading, 2 ready, 3 failed
+        set(v) { field = v; _changes.value = _changes.value + 1 }
 
     /** Strictness 0 (lenient) .. 2 (strict); set from Settings. */
     @Volatile var level: Int = 1
@@ -45,6 +50,7 @@ object ImageFingerprint {
     val failed: Boolean get() = initState == 3
 
     /** Loads the model off the main thread. Safe to call repeatedly; [retry] forces another attempt after a failure. */
+    @Synchronized
     fun init(ctx: Context, retry: Boolean = false) {
         if (initState == 1 || initState == 2) return
         if (initState == 3 && !retry) return
@@ -73,14 +79,25 @@ object ImageFingerprint {
                 if (ok.getOrNull() == EMB_DIM) initState = 2
                 else {
                     embedder = null
-                    error = ok.exceptionOrNull()?.let { e -> "${e.javaClass.simpleName}: ${e.message}" } ?: "اندازهٔ خروجی مدل ${ok.getOrNull()} است (۱۰۲۴ لازم است)"
+                    error = ok.exceptionOrNull()?.let { e -> describe(e) } ?: "اندازهٔ خروجی مدل ${ok.getOrNull()} است (۱۰۲۴ لازم است)"
                     initState = 3
                 }
             }.onFailure {
-                error = "${it.javaClass.simpleName}: ${it.message}"
+                // report the FIRST failure with its root cause: the second attempt usually only says
+                // "NoClassDefFoundError: ...Graph" because the class initialiser already failed during the first one
+                error = describe(first.exceptionOrNull() ?: it)
                 initState = 3
             }
         }.start()
+    }
+
+    /** "Type: message ← RootType: root message" (the root cause is what tells why a model could not start). */
+    private fun describe(e: Throwable): String {
+        var root = e
+        val seen = HashSet<Throwable>()
+        while (root.cause != null && seen.add(root)) root = root.cause!!
+        val top = "${e.javaClass.simpleName}: ${e.message}"
+        return if (root === e) top else "$top ← ${root.javaClass.simpleName}: ${root.message}"
     }
 
     /** One line for the UI. */

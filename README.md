@@ -21,16 +21,19 @@
 
 ## فعال‌سازی سینک Google (اختیاری)
 1. در [Firebase Console](https://console.firebase.google.com) یک پروژه بسازید و اپ اندروید با پکیج `com.mozkhan.shop` اضافه کنید (SHA-1 کلید دیباگ را هم وارد کنید: `./gradlew signingReport`).
-2. Authentication ← Sign-in method ← **Google** را فعال کنید.
-3. Firestore Database را بسازید و این قوانین را بگذارید:
+2. Authentication ← Sign-in method ← **Anonymous** را فعال کنید (برای «کد فروشگاه»؛ اگر با حساب Google وارد می‌شوید **Google** را هم فعال کنید).
+3. Firestore Database را بسازید و این قوانین را بگذارید و Publish کنید:
 ```
 rules_version = '2';
 service cloud.firestore {
   match /databases/{db}/documents {
-    match /shops/{uid}/{doc=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+    // پوشهٔ هر فروشگاه = کد فروشگاه (یا شناسهٔ حساب Google). همهٔ گوشی‌های واردشده با همان کد به آن دسترسی دارند.
+    match /shops/{shop}/{doc=**} {
+      allow read, write: if request.auth != null;
     }
   }
 }
 ```
+   (قانون قدیمی `request.auth.uid == uid` با «کد فروشگاه» کار نمی‌کند، چون نام پوشه کد فروشگاه است نه شناسهٔ کاربر؛ نتیجه‌اش «دسترسی رد شد» است.)
+   اگر خطایی در ارسال باشد، نقطهٔ وضعیت بالای صفحه قرمز می‌شود و متن خطا در تنظیمات دیده می‌شود. «آزمایش اتصال» تعداد کالا و فاکتورهای ابر و گوشی را مقایسه می‌کند.
 4. `google-services.json` را در پوشهٔ `app/` بگذارید و دوباره بسازید. (بدون این فایل، اپ فقط محلی کار می‌کند.)

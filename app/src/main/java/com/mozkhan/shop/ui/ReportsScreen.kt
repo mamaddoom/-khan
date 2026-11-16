@@ -256,9 +256,8 @@ private fun ExpenseDialog(cur: Currency, onDismiss: () -> Unit, onOk: (String, L
 
 @Composable
 private fun SaleDetailDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
-    var items by remember { mutableStateOf<List<SaleItem>>(emptyList()) }
+    val items by remember(s.id) { vm.repo.observeItemsOf(s.id) }.collectAsState(initial = emptyList<SaleItem>())
     var confirm by remember { mutableStateOf(false) }
-    LaunchedEffect(s.id) { items = vm.repo.itemsOf(s.id) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("فاکتور " + Jalali.dateTime(s.ts)) },
@@ -274,6 +273,7 @@ private fun SaleDetailDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -
                 SumRow("جمع", Fmt.money(s.total, cur))
                 SumRow("سود", Fmt.money(s.total - s.cost, cur), MaterialTheme.extra.profit)
                 if (s.payment == "CREDIT") SumRow("نحوهٔ پرداخت", "نسیه")
+                if (s.deviceName.isNotBlank()) SumRow("فروشنده", s.deviceName)
                 if (confirm) Text("با ابطال، کالاها به موجودی برمی‌گردند. مطمئن هستید؟", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         },

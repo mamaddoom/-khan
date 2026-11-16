@@ -38,7 +38,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -158,13 +157,13 @@ fun AppRoot(vm: MainVm, activity: Activity) {
     var refreshing by remember { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val onPullRefresh: () -> Unit = {
-        refreshing = true
-        vm.sync.syncNow()
-        scope.launch {
-            delay(1800)
-            refreshing = false
-            val err = vm.sync.state.value.error
-            Toast.makeText(ctx, if (err != null) "همگام‌سازی ناموفق: $err" else "همگام‌سازی انجام شد", Toast.LENGTH_SHORT).show()
+        if (!refreshing) {
+            refreshing = true
+            scope.launch {
+                // waits for the real upload (max ~25 s) instead of a fixed delay; never starts sync that was switched off
+                val msg = try { vm.sync.refresh() } finally { refreshing = false }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            }
         }
     }
 

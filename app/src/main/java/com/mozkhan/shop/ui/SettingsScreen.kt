@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,21 +71,38 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
 
     fun toast(s: String) = Toast.makeText(ctx, s, Toast.LENGTH_LONG).show()
 
+    // backup / restore run in the ViewModel scope (vm.persist): leaving Settings must not leave a half-written file or restore
+    val appCtx = ctx.applicationContext
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) scope.launch {
-            runCatching {
-                val json = vm.repo.exportJson()
-                withContext(Dispatchers.IO) { ctx.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) } }
-            }.onSuccess { toast("نسخهٔ پشتیبان ذخیره شد") }.onFailure { toast("خطا در ذخیره: ${it.message}") }
+            try {
+                vm.persist {
+                    val json = vm.repo.exportJson()
+                    withContext(Dispatchers.IO) {
+                        (appCtx.contentResolver.openOutputStream(uri) ?: error("فایل باز نشد")).use { it.write(json.toByteArray()) }
+                    }
+                }
+                toast("نسخهٔ پشتیبان ذخیره شد")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast("خطا در ذخیره: ${e.message}")
+            }
         }
     }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
-            runCatching {
-                val text = withContext(Dispatchers.IO) { ctx.contentResolver.openInputStream(uri)?.use { String(it.readBytes()) } }.orEmpty()
-                vm.repo.importJson(text)
-            }.onSuccess { toast("اطلاعات با موفقیت بازیابی شد") }
-                .onFailure { toast(if (it.message == com.mozkhan.shop.data.BackupParser.NEWER_FILE) it.message!! else "فایل پشتیبان معتبر نیست") }
+            try {
+                vm.persist {
+                    val text = withContext(Dispatchers.IO) { appCtx.contentResolver.openInputStream(uri)?.use { String(it.readBytes()) } }.orEmpty()
+                    vm.repo.importJson(text)
+                }
+                toast("اطلاعات با موفقیت بازیابی شد")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                toast(if (e.message == com.mozkhan.shop.data.BackupParser.NEWER_FILE) e.message!! else "فایل پشتیبان معتبر نیست")
+            }
         }
     }
 
@@ -92,6 +110,15 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "بازگشت") }
             Text("تنظیمات", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        Group("نام این گوشی (فروشنده)") {
+            var devName by remember { mutableStateOf(prefs.deviceName) }
+            OutlinedTextField(
+                value = devName, onValueChange = { devName = it; prefs.deviceName = it }, singleLine = true,
+                label = { Text("مثلاً: صندوق ۱ / علی") }, modifier = Modifier.fillMaxWidth(),
+            )
+            Text("این نام روی هر فاکتوری که با این گوشی ثبت شود به‌عنوان فروشنده ذخیره و نمایش داده می‌شود و با همگام‌سازی روی همهٔ گوشی‌ها دیده می‌شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         Group("نقش این گوشی") {
@@ -135,10 +162,10 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 }
             }
             Text("اگر کالا را دیر شناخت «راحت‌گیر»، و اگر کالای اشتباه پیشنهاد داد «سخت‌گیر» را بزنید.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            var modelTick by remember { mutableStateOf(0) }
-            Text(com.mozkhan.shop.ml.ImageFingerprint.status().also { modelTick.hashCode() }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val modelVer by com.mozkhan.shop.ml.ImageFingerprint.changes.collectAsState()
+            Text(com.mozkhan.shop.ml.ImageFingerprint.status().also { modelVer.hashCode() }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
-                com.mozkhan.shop.ml.ImageFingerprint.init(ctx, retry = true); modelTick++
+                com.mozkhan.shop.ml.ImageFingerprint.init(ctx, retry = true)
             }) { Text("بارگذاری دوبارهٔ مدل هوشمند / بروزرسانی وضعیت") }
             Text("خاموشی خودکار دوربین (صرفه‌جویی باتری)", style = MaterialTheme.typography.labelLarge)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -271,7 +298,7 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                             val r = vm.sync.signIn(activity)
                             busy = false
                             r.onSuccess { prefs.setCloudSync(true); vm.sync.start(); toast("وارد شدید: $it") }
-                                .onFailure { toast(it.message ?: "ورود ناموفق") }
+                                .onFailure { if (it !is kotlinx.coroutines.CancellationException) toast(it.message ?: "ورود ناموفق") }
                         }
                     }, modifier = Modifier.fillMaxWidth()) { Text("ورود با حساب Google") }
                 } else {
