@@ -27,6 +27,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -75,6 +79,7 @@ private fun NavHostController.goTab(route: String) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppRoot(vm: MainVm, activity: Activity) {
     val ctx = LocalContext.current
@@ -140,6 +145,20 @@ fun AppRoot(vm: MainVm, activity: Activity) {
         if (upd.downloaded != null) vm.updater.install()?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show() }
     }
 
+    // pull down on any screen to sync the database now (like Instagram / YouTube)
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val onPullRefresh: () -> Unit = {
+        refreshing = true
+        vm.sync.syncNow()
+        scope.launch {
+            delay(1800)
+            refreshing = false
+            val err = vm.sync.state.value.error
+            Toast.makeText(ctx, if (err != null) "همگام‌سازی ناموفق: $err" else "همگام‌سازی انجام شد", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -156,7 +175,8 @@ fun AppRoot(vm: MainVm, activity: Activity) {
             }
         },
     ) { pad ->
-        NavHost(nav, startDestination = "home", modifier = Modifier.padding(pad).statusBarsPadding()) {
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = onPullRefresh, modifier = Modifier.padding(pad).statusBarsPadding()) {
+        NavHost(nav, startDestination = "home", modifier = Modifier) {
             composable("home") {
                 HomeScreen(vm, onGo = { nav.goTab(it) }, onNew = { if (salesOnly) deny() else nav.navigate(editRoute()) })
             }
@@ -192,6 +212,7 @@ fun AppRoot(vm: MainVm, activity: Activity) {
                     onOpen = { pid -> nav.popBackStack(); nav.navigate(editRoute(id = pid, mode = "restock")) },
                 )
             }
+        }
         }
     }
 }
