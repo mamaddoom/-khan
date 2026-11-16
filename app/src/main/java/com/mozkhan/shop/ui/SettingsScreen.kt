@@ -214,13 +214,42 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                     }, modifier = Modifier.weight(1f)) { Text("اتصال با این کد") }
                 }
                 if (prefs.shopCode.isNotEmpty()) {
+                    // the code can always be read back from any connected phone; copy it, send it to yourself, keep it safe
+                    Text("کد فعلی این فروشگاه:", style = MaterialTheme.typography.labelLarge)
+                    Text(prefs.shopCode, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            (ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                                .setPrimaryClip(android.content.ClipData.newPlainText("shop code", prefs.shopCode))
+                            toast("کد کپی شد")
+                        }, modifier = Modifier.weight(1f)) { Text("کپی کد") }
+                        OutlinedButton(onClick = {
+                            ctx.startActivity(
+                                android.content.Intent.createChooser(
+                                    android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                                        .putExtra(android.content.Intent.EXTRA_TEXT, "کد فروشگاه MozKhan: ${prefs.shopCode}"),
+                                    "ارسال کد",
+                                ),
+                            )
+                        }, modifier = Modifier.weight(1f)) { Text("ارسال کد") }
+                    }
+                    Text(
+                        "اگر کد گم شد: از «تنظیمات» هر گوشی‌ای که هنوز وصل است می‌توانید دوباره آن را ببینید. فایل «ذخیرهٔ پشتیبان» هم کد را نگه می‌دارد و با «بازیابی» روی گوشی جدید برمی‌گردد. اطلاعات فروش هیچ‌وقت با گم شدن کد پاک نمی‌شود؛ روی خود گوشی می‌ماند.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     SwitchRow("همگام‌سازی خودکار", cloud) { on ->
                         prefs.setCloudSync(on)
                         if (on) vm.sync.start() else vm.sync.stop()
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { vm.sync.syncNow(); toast("همگام‌سازی شروع شد") }, enabled = cloud, modifier = Modifier.weight(1f)) { Text("همگام‌سازی اکنون") }
-                        OutlinedButton(onClick = { prefs.setCloudSync(false); vm.sync.leaveShopCode(); shopCode = "" }, modifier = Modifier.weight(1f)) { Text("قطع اتصال") }
+                        OutlinedButton(onClick = {
+                            // disconnecting forgets the code on this phone: put it on the clipboard first so it can be re-entered
+                            (ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager)
+                                .setPrimaryClip(android.content.ClipData.newPlainText("shop code", prefs.shopCode))
+                            toast("کد قبلی در کلیپ‌بورد ذخیره شد؛ برای اتصال دوباره همان را وارد کنید")
+                            prefs.setCloudSync(false); vm.sync.leaveShopCode(); shopCode = ""
+                        }, modifier = Modifier.weight(1f)) { Text("قطع اتصال") }
                     }
                     OutlinedButton(enabled = !busy, onClick = {
                         busy = true; testMsg = "در حال آزمایش اتصال…"

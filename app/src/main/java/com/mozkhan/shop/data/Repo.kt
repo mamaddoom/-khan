@@ -408,6 +408,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         val o = JSONObject()
         o.put("version", BACKUP_VERSION)
         o.put("exportedAt", System.currentTimeMillis())
+        o.put("shopCode", prefs.shopCode) // keeps the cloud link recoverable: restoring this file on a new phone brings the code back
         o.put("products", JSONArray().apply {
             db.products().allRaw().forEach {
                 put(JSONObject().put("id", it.id).put("name", it.name).put("barcode", it.barcode ?: JSONObject.NULL)
@@ -480,6 +481,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
      */
     suspend fun importJson(text: String) {
         val b = withContext(Dispatchers.Default) { BackupParser.parse(text) }
+        // a phone without a shop code gets the one stored in the backup (an existing code is never replaced)
+        runCatching { JSONObject(text).optString("shopCode", "") }.getOrDefault("").takeIf { it.length >= 8 && prefs.shopCode.isBlank() }?.let { prefs.shopCode = it }
         db.withTransaction {
             val p = Merge.newer(b.products, db.products().allRaw().associateBy { it.id }, { it.id }, { it.updatedAt })
             val d = Merge.newer(b.docs, db.stock().allDocs().associateBy { it.id }, { it.id }, { it.updatedAt })
