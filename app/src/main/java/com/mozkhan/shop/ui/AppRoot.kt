@@ -113,6 +113,33 @@ fun AppRoot(vm: MainVm, activity: Activity) {
         )
     }
 
+    // ---- new version found on GitHub Releases: offer it once per launch
+    val upd by vm.updater.state.collectAsState()
+    var updDismissed by remember { mutableStateOf(false) }
+    if (upd.available && !updDismissed) {
+        AlertDialog(
+            onDismissRequest = { updDismissed = true },
+            title = { Text("نسخهٔ جدید آماده است") },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    Text("نسخهٔ ${upd.latestName} منتشر شده است. اطلاعات شما با به‌روزرسانی حفظ می‌شود.")
+                    if (upd.downloading) Text("در حال دانلود… ${(upd.progress * 100).toInt()}٪", Modifier.padding(top = 8.dp))
+                    upd.message?.let { Text(it, Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !upd.downloading, onClick = {
+                    if (upd.downloaded != null) vm.updater.install()?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show() }
+                    else vm.updater.download()
+                }) { Text(if (upd.downloaded != null) "نصب" else "دانلود و نصب") }
+            },
+            dismissButton = { TextButton(onClick = { updDismissed = true }) { Text("بعداً") } },
+        )
+    }
+    LaunchedEffect(upd.downloaded) {
+        if (upd.downloaded != null) vm.updater.install()?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show() }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {

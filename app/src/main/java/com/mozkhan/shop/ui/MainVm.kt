@@ -101,6 +101,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val repo = shop.repo
     val prefs = shop.prefs
     val sync = shop.sync
+    val updater = shop.updater
     private val fb = shop.feedback
 
     // ---- errors never crash the app: they are logged and shown as a message

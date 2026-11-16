@@ -15,6 +15,8 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.QuerySnapshot
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.mozkhan.shop.data.AppDb
 import com.mozkhan.shop.data.CreditPayment
 import com.mozkhan.shop.data.Customer
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeout
 
 data class SyncState(
     val available: Boolean = false,
@@ -116,6 +119,26 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         _state.value = _state.value.copy(available = hasApp(), error = null)
     }.onFailure { _state.value = _state.value.copy(error = it.message) }
 
+    /**
+     * Real round trip to the server: signs in (anonymous when a shop code is used), writes and reads a test document and
+     * compares the number of products in the cloud with this phone. Returns a message that says what works or what to fix.
+     */
+    suspend fun testConnection(): Result<String> = runCatching {
+        check(hasApp()) { "ابتدا تنظیمات Firebase را ذخیره کنید" }
+        withTimeout(20_000) {
+            ensureAuth()
+            val r = root() ?: error("کد فروشگاه یا حساب Google تنظیم نشده است")
+            val ping = r.collection("meta").document("ping")
+            ping.set(mapOf("ts" to System.currentTimeMillis(), "from" to android.os.Build.MODEL)).await()
+            check(ping.get(Source.SERVER).await().exists()) { "نوشتن انجام شد اما خواندن از سرور ممکن نشد" }
+            val cloud = r.collection("products").get(Source.SERVER).await().size()
+            val local = db.products().allRaw().size
+            "اتصال برقرار است ✓  کالا در ابر: $cloud • روی این گوشی: $local"
+        }
+    }.onSuccess { _state.value = _state.value.copy(error = null) }
+        .recoverCatching { throw IllegalStateException(explain(it)) }
+        .onFailure { _state.value = _state.value.copy(error = it.message) }
+
     // ---------------------------------------------------------------- lifecycle
     fun start() {
         if (!hasApp() || active) return
@@ -124,7 +147,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         scope.launch(Dispatchers.IO) {
             val r = runCatching { ensureAuth(); root() }.getOrElse {
                 active = false
-                _state.value = _state.value.copy(running = false, error = "اتصال به Firebase ناموفق بود (ورود ناشناس را در Authentication فعال کنید): ${it.message}")
+                _state.value = _state.value.copy(running = false, error = explain(it))
                 return@launch
             }
             if (r == null) {
@@ -134,7 +157,9 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             }
             // Schema gate: a phone running an OLDER app must never write into data that a newer app already upgraded.
             val meta = r.collection("meta").document("app")
-            val remote = runCatching { (meta.get().await().get("schema") as? Number)?.toInt() ?: 0 }.getOrDefault(0)
+            val remote = runCatching { (meta.get().await().get("schema") as? Number)?.toInt() ?: 0 }
+                .onFailure { if (it is FirebaseFirestoreException && it.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) _state.value = _state.value.copy(error = explain(it)) }
+                .getOrDefault(0)
             if (remote > SCHEMA) {
                 active = false
                 _state.value = _state.value.copy(running = false, error = "لطفاً برنامه را به‌روزرسانی کنید؛ اطلاعات ابری با نسخهٔ جدیدتری ذخیره شده است")
@@ -150,11 +175,32 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             listen(r, "customers") { applyCustomers(it) }
             listen(r, "payments") { applyPayments(it) }
             listen(r, "recipes") { applyRecipes(it) }
-            runCatching { pushAllLocal() }.onFailure { _state.value = _state.value.copy(error = it.message) }
+            runCatching { pushAllLocal() }.onFailure { _state.value = _state.value.copy(error = explain(it)) }
         }
     }
 
-    companion object { const val SCHEMA = 3 }
+    companion object {
+        const val SCHEMA = 3
+
+        /** Turns Firebase exceptions into a Persian message that says what to fix. */
+        fun explain(e: Throwable?): String {
+            val m = e?.message.orEmpty()
+            return when {
+                e is kotlinx.coroutines.TimeoutCancellationException -> "پاسخی از سرور نیامد؛ اینترنت را بررسی کنید"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    "دسترسی رد شد: در Firebase بخش Firestore ← Rules را مطابق راهنما تنظیم و Publish کنید"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAVAILABLE -> "سرور در دسترس نیست؛ اینترنت را بررسی کنید"
+                e is FirebaseFirestoreException && (e.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION || e.code == FirebaseFirestoreException.Code.NOT_FOUND) ->
+                    "Firestore Database هنوز ساخته نشده است (Firebase ← Build ← Firestore Database ← Create database)"
+                m.contains("OPERATION_NOT_ALLOWED", true) || m.contains("sign-in provider is disabled", true) || m.contains("admin-restricted", true) ->
+                    "ورود ناشناس فعال نیست: Firebase ← Authentication ← Sign-in method ← Anonymous را Enable کنید"
+                m.contains("API key", true) && (m.contains("not valid", true) || m.contains("invalid", true)) -> "API key اشتباه است"
+                m.contains("CONFIGURATION_NOT_FOUND", true) -> "Authentication در پروژهٔ Firebase راه‌اندازی نشده (Get started را بزنید)"
+                m.contains("network", true) || m.contains("Unable to resolve host", true) -> "اینترنت برقرار نیست"
+                else -> m.ifBlank { "خطای ناشناخته" }
+            }
+        }
+    }
 
     fun stop() {
         regs.forEach { it.remove() }
@@ -198,14 +244,14 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
     private fun listen(r: DocumentReference, name: String, apply: suspend (QuerySnapshot) -> Unit) {
         regs += r.collection(name).addSnapshotListener { snap, err ->
             if (err != null) {
-                _state.value = _state.value.copy(error = err.message)
+                _state.value = _state.value.copy(error = explain(err))
                 return@addSnapshotListener
             }
             if (snap == null) return@addSnapshotListener
             scope.launch(Dispatchers.IO) {
                 runCatching { apply(snap) }
                     .onSuccess { _state.value = _state.value.copy(lastSync = System.currentTimeMillis(), error = null) }
-                    .onFailure { _state.value = _state.value.copy(error = it.message) }
+                    .onFailure { _state.value = _state.value.copy(error = explain(it)) }
             }
         }
     }
@@ -230,15 +276,24 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         val r = root() ?: return
         val fs = FirebaseFirestore.getInstance()
         val writes = ArrayList<Pair<DocumentReference, Map<String, Any?>>>()
-        db.products().allRaw().forEach { writes += r.collection("products").document(it.id) to it.toMap() }
-        db.stock().all().forEach { writes += r.collection("moves").document(it.id) to it.toMap() }
-        db.stock().allDocs().forEach { writes += r.collection("docs").document(it.id) to it.toMap() }
-        db.sales().allSales().forEach { writes += r.collection("sales").document(it.id) to it.toMap() }
-        db.sales().allItems().forEach { writes += r.collection("items").document(it.id) to it.toMap() }
-        db.expenses().all().forEach { writes += r.collection("expenses").document(it.id) to it.toMap() }
-        db.credit().allCustomers().forEach { writes += r.collection("customers").document(it.id) to it.toMap() }
-        db.credit().allPayments().forEach { writes += r.collection("payments").document(it.id) to it.toMap() }
-        db.recipes().all().forEach { writes += r.collection("recipes").document(it.id) to it.toMap() }
+        // Only upload what the cloud does not have yet, or what is NEWER here. Blindly re-uploading everything would let a
+        // phone with old data overwrite newer prices / edits made on another phone (last-writer-wins on updatedAt).
+        suspend fun <T> collect(name: String, local: List<T>, id: (T) -> String, ts: ((T) -> Long)?, map: (T) -> Map<String, Any?>) {
+            val remote = r.collection(name).get().await().documents.associate { d -> d.id to ((d.get("updatedAt") as? Number)?.toLong() ?: 0L) }
+            for (x in local) {
+                val rt = remote[id(x)]
+                if (rt == null || (ts != null && ts(x) > rt)) writes += r.collection(name).document(id(x)) to map(x)
+            }
+        }
+        collect("products", db.products().allRaw(), { it.id }, { it.updatedAt }) { it.toMap() }
+        collect("moves", db.stock().all(), { it.id }, null) { it.toMap() }
+        collect("docs", db.stock().allDocs(), { it.id }, { it.updatedAt }) { it.toMap() }
+        collect("sales", db.sales().allSales(), { it.id }, { it.updatedAt }) { it.toMap() }
+        collect("items", db.sales().allItems(), { it.id }, null) { it.toMap() }
+        collect("expenses", db.expenses().all(), { it.id }, { it.updatedAt }) { it.toMap() }
+        collect("customers", db.credit().allCustomers(), { it.id }, { it.updatedAt }) { it.toMap() }
+        collect("payments", db.credit().allPayments(), { it.id }, { it.updatedAt }) { it.toMap() }
+        collect("recipes", db.recipes().all(), { it.id }, { it.updatedAt }) { it.toMap() }
         writes.chunked(400).forEach { chunk ->
             val b = fs.batch()
             chunk.forEach { (ref, data) -> b.set(ref, data, SetOptions.merge()) }

@@ -8,3 +8,5 @@ captures/
 .cxx/
 *.keystore
 app/google-services.json
+
+*keystore*base64*.txt

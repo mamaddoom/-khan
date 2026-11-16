@@ -153,11 +153,19 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                         }
                         Row(Modifier.align(Alignment.TopStart).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (hasFlash) CamBtn(if (torch) Icons.Filled.FlashOn else Icons.Filled.FlashOff, "چراغ", torch) { torch = !torch }
-                            CamBtn(Icons.Filled.ImageSearch, "تشخیص تصویری", visualOn) { visualOn = !visualOn }
+                            CamBtn(Icons.Filled.ImageSearch, "تشخیص تصویری", visualOn) {
+                                visualOn = !visualOn
+                                if (visualOn && com.mozkhan.shop.ml.ImageFingerprint.failed) com.mozkhan.shop.ml.ImageFingerprint.init(ctx, retry = true)
+                            }
                         }
                         Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) { CamBtn(Icons.Filled.Close, "بستن دوربین", false) { cameraOn = false; torch = false } }
                         Text(
-                            if (visualOn && hasPrints) "بارکد یا خود کالا را جلوی دوربین بگیرید" else "بارکد را جلوی دوربین بگیرید",
+                            when {
+                                !visualOn -> "بارکد را جلوی دوربین بگیرید"
+                                !hasPrints -> "هنوز کالایی عکس مرجع ندارد: از صفحهٔ هر کالا چند عکس ثبت کنید"
+                                !com.mozkhan.shop.ml.ImageFingerprint.modelReady -> com.mozkhan.shop.ml.ImageFingerprint.status()
+                                else -> "بارکد یا خود کالا را جلوی دوربین بگیرید"
+                            },
                             color = Color.White, style = MaterialTheme.typography.labelMedium,
                             modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)
                                 .background(Color.Black.copy(alpha = 0.45f), CircleShape).padding(horizontal = 12.dp, vertical = 4.dp),

@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.util.Base64
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.imageembedder.ImageEmbedder
 import com.mozkhan.shop.data.ProductWithStock
@@ -36,6 +37,11 @@ object ImageFingerprint {
     @Volatile var level: Int = 1
 
     val modelReady: Boolean get() = embedder != null
+    val loading: Boolean get() = initState == 1
+
+    /** Why the model could not be loaded (shown in Settings / the product screen). */
+    @Volatile var error: String? = null
+        private set
     val failed: Boolean get() = initState == 3
 
     /** Loads the model off the main thread. Safe to call repeatedly; [retry] forces another attempt after a failure. */
@@ -43,16 +49,46 @@ object ImageFingerprint {
         if (initState == 1 || initState == 2) return
         if (initState == 3 && !retry) return
         initState = 1
+        error = null
         Thread {
-            initState = runCatching {
-                val opts = ImageEmbedder.ImageEmbedderOptions.builder()
-                    .setBaseOptions(BaseOptions.builder().setModelAssetPath(MODEL).build())
-                    .setRunningMode(RunningMode.IMAGE)
-                    .setL2Normalize(true)
-                    .build()
-                embedder = ImageEmbedder.createFromOptions(ctx.applicationContext, opts)
-            }.fold({ 2 }, { 3 })
+            val app = ctx.applicationContext
+            fun build(base: BaseOptions) = ImageEmbedder.createFromOptions(
+                app,
+                ImageEmbedder.ImageEmbedderOptions.builder().setBaseOptions(base).setRunningMode(RunningMode.IMAGE).setL2Normalize(true).build(),
+            )
+            // 1) model by asset path; 2) model read into memory (works even if the asset path cannot be memory-mapped)
+            val first = runCatching { build(BaseOptions.builder().setModelAssetPath(MODEL).setDelegate(Delegate.CPU).build()) }
+            val result = first.recoverCatching {
+                val bytes = app.assets.open(MODEL).use { it.readBytes() }
+                val buf = ByteBuffer.allocateDirect(bytes.size).apply { put(bytes); rewind() }
+                build(BaseOptions.builder().setModelAssetBuffer(buf).setDelegate(Delegate.CPU).build())
+            }
+            result.onSuccess {
+                embedder = it
+                // self-test: the model must really produce a vector of the size stored prints expect
+                val ok = runCatching {
+                    val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GRAY) }
+                    it.embed(BitmapImageBuilder(bmp).build()).embeddingResult().embeddings()[0].floatEmbedding().size
+                }
+                if (ok.getOrNull() == EMB_DIM) initState = 2
+                else {
+                    embedder = null
+                    error = ok.exceptionOrNull()?.let { e -> "${e.javaClass.simpleName}: ${e.message}" } ?: "اندازهٔ خروجی مدل ${ok.getOrNull()} است (۱۰۲۴ لازم است)"
+                    initState = 3
+                }
+            }.onFailure {
+                error = "${it.javaClass.simpleName}: ${it.message}"
+                initState = 3
+            }
         }.start()
+    }
+
+    /** One line for the UI. */
+    fun status(): String = when {
+        embedder != null -> "مدل هوشمند تشخیص تصویر فعال است"
+        initState == 1 -> "مدل هوشمند در حال بارگذاری است…"
+        initState == 3 -> "مدل هوشمند بارگذاری نشد (${error ?: "نامشخص"}). حالت رنگی ضعیف فعال است"
+        else -> "مدل هوشمند هنوز شروع نشده"
     }
 
     // ------------------------------------------------------------------ thresholds (need field calibration)
@@ -63,7 +99,8 @@ object ImageFingerprint {
 
     // ------------------------------------------------------------------ public API
     /** Descriptor string for a reference photo. */
-    fun compute(src: Bitmap): String = embed(src)?.let { "E1:" + encodeEmbedding(it) } ?: ("C:" + encodeColor(colorDescriptor(src)))
+    fun compute(src: Bitmap): String? =
+        embed(src)?.let { "E1:" + encodeEmbedding(it) } ?: if (initState == 3) "C:" + encodeColor(colorDescriptor(src)) else null
 
     /** [legacy] = score comes from an old colour print: shown as a hint, never accepted automatically. */
     data class Match(val product: ProductWithStock, val score: Float, val legacy: Boolean = false)

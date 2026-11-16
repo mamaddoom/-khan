@@ -21,6 +21,7 @@ class ShopApp : Application() {
     lateinit var repo: Repo
     lateinit var sync: CloudSync
     lateinit var feedback: Feedback
+    lateinit var updater: com.mozkhan.shop.util.Updater
 
     override fun onCreate() {
         super.onCreate()
@@ -31,6 +32,8 @@ class ShopApp : Application() {
         sync = CloudSync(this, db, appScope, prefs)
         repo = Repo(db, prefs, sync)
         feedback = Feedback(this, prefs)
+        updater = com.mozkhan.shop.util.Updater(this, appScope)
+        updater.check(silent = true)
         com.mozkhan.shop.ml.ImageFingerprint.level = prefs.visionLevel.value
         com.mozkhan.shop.ml.ImageFingerprint.init(this) // loads the embedding model on a background thread
         // Runtime Firebase configuration (Settings -> Google) when there is no google-services.json
