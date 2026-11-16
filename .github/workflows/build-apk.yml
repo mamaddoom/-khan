@@ -5,9 +5,13 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -35,7 +39,37 @@ jobs:
         run: ./gradlew :app:testDebugUnitTest
       - name: Build release APK (R8 + MediaPipe rules are exercised here)
         run: ./gradlew :app:assembleRelease
+
+      - name: Read version
+        id: ver
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -n1)
+          NAME=$(basename "$APK" .apk)               # MozKhan-1.2.2-release
+          VN=$(echo "$NAME" | sed -E 's/^MozKhan-([0-9.]+)-release$/\1/')
+          VC=$(grep -o '"versionCode": *[0-9]*' app/build/outputs/apk/release/output-metadata.json | head -n1 | grep -o '[0-9]*$')
+          cp "$APK" "MozKhan-$VN-$VC.apk"
+          echo "vn=$VN" >> "$GITHUB_OUTPUT"
+          echo "vc=$VC" >> "$GITHUB_OUTPUT"
+          echo "apk=MozKhan-$VN-$VC.apk" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
           name: MozKhan-release-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: ${{ steps.ver.outputs.apk }}
+
+      # Every successful build on main becomes the newest GitHub Release (marked "Latest").
+      # The in-app updater reads this release: tag = v<versionName>-<versionCode>.
+      - name: Publish GitHub Release
+        if: github.ref_name == 'main' || github.ref_name == 'master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.vn }}-${{ steps.ver.outputs.vc }}
+          name: MozKhan ${{ steps.ver.outputs.vn }} (build ${{ steps.ver.outputs.vc }})
+          make_latest: true
+          files: ${{ steps.ver.outputs.apk }}
+          body: |
+            MozKhan ${{ steps.ver.outputs.vn }}
+            versionCode=${{ steps.ver.outputs.vc }}
+            commit: ${{ github.sha }}
+
+            Install the APK below. It updates the installed app in place (same signing key).

@@ -66,6 +66,7 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
     var projectId by remember { mutableStateOf(prefs.fbProjectId) }
     var webId by remember { mutableStateOf(prefs.fbWebClientId) }
     var shopCode by remember { mutableStateOf(prefs.shopCode) }
+    var testMsg by remember { mutableStateOf<String?>(null) }
 
     fun toast(s: String) = Toast.makeText(ctx, s, Toast.LENGTH_LONG).show()
 
@@ -134,6 +135,11 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 }
             }
             Text("اگر کالا را دیر شناخت «راحت‌گیر»، و اگر کالای اشتباه پیشنهاد داد «سخت‌گیر» را بزنید.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            var modelTick by remember { mutableStateOf(0) }
+            Text(com.mozkhan.shop.ml.ImageFingerprint.status().also { modelTick.hashCode() }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedButton(onClick = {
+                com.mozkhan.shop.ml.ImageFingerprint.init(ctx, retry = true); modelTick++
+            }) { Text("بارگذاری دوبارهٔ مدل هوشمند / بروزرسانی وضعیت") }
             Text("خاموشی خودکار دوربین (صرفه‌جویی باتری)", style = MaterialTheme.typography.labelLarge)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(listOf(30 to "۳۰ ثانیه", 60 to "۱ دقیقه", 180 to "۳ دقیقه", 0 to "هرگز")) { (s, label) ->
@@ -216,6 +222,15 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                         Button(onClick = { vm.sync.syncNow(); toast("همگام‌سازی شروع شد") }, enabled = cloud, modifier = Modifier.weight(1f)) { Text("همگام‌سازی اکنون") }
                         OutlinedButton(onClick = { prefs.setCloudSync(false); vm.sync.leaveShopCode(); shopCode = "" }, modifier = Modifier.weight(1f)) { Text("قطع اتصال") }
                     }
+                    OutlinedButton(enabled = !busy, onClick = {
+                        busy = true; testMsg = "در حال آزمایش اتصال…"
+                        scope.launch {
+                            val r = vm.sync.testConnection()
+                            busy = false
+                            testMsg = r.getOrElse { it.message ?: "ناموفق" }
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) { Text("آزمایش اتصال به ابر") }
+                    testMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("اتصال برقرار")) MaterialTheme.extra.profit else MaterialTheme.colorScheme.onSurface) }
                 }
                 Text("— یا (اختیاری) با حساب Google —", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (prefs.shopCode.isNotEmpty()) {
@@ -242,6 +257,22 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 }
                 st.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Text("بدون اینترنت هم می‌توانید کار کنید؛ تغییرات پس از اتصال خودکار ارسال می‌شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        Group("به‌روزرسانی برنامه") {
+            val upd by vm.updater.state.collectAsState()
+            Text("نسخهٔ نصب‌شده: ${Fmt.digits(com.mozkhan.shop.BuildConfig.VERSION_NAME)}", style = MaterialTheme.typography.titleSmall)
+            if (upd.available) Text("نسخهٔ جدید: ${Fmt.digits(upd.latestName)}", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
+            if (upd.downloading) Text("در حال دانلود… ${Fmt.digits("${(upd.progress * 100).toInt()}٪")}", style = MaterialTheme.typography.bodySmall)
+            upd.message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(enabled = !upd.checking && !upd.downloading, onClick = { vm.updater.check() }, modifier = Modifier.weight(1f)) {
+                    Text(if (upd.checking) "در حال بررسی…" else "بررسی نسخهٔ جدید")
+                }
+                if (upd.available) Button(enabled = !upd.downloading, onClick = {
+                    if (upd.downloaded != null) vm.updater.install()?.let { toast(it) } else vm.updater.download()
+                }, modifier = Modifier.weight(1f)) { Text(if (upd.downloaded != null) "نصب" else "دانلود و نصب") }
             }
         }
 

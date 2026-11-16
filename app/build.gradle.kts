@@ -23,7 +23,8 @@ android {
         applicationId = "com.mozkhan.shop"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
+        // minutes since the epoch: every build (local or CI) is newer than the previous one, so APKs always update in place
+        versionCode = (System.currentTimeMillis() / 60000L).toInt()
         versionName = appVersionName
         // Only ship modern ABIs -> smaller APK
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }

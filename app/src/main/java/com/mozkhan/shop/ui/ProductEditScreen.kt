@@ -215,6 +215,10 @@ fun ProductEditScreen(
         if (prints.size >= 6) { error = "حداکثر ۶ عکس مرجع کافی است"; return }
         grabber.grab { bmp ->
             val fp = ImageFingerprint.compute(bmp)
+            if (fp == null) {
+                scope.launch { error = "مدل هوشمند هنوز آماده نیست؛ چند ثانیه صبر کنید و دوباره عکس بگیرید" }
+                return@grab
+            }
             val thumb = Bitmap.createScaledBitmap(bmp, 96, (96f * bmp.height / bmp.width).toInt().coerceAtLeast(1), true)
             // enrollment check: warn when the picture looks like a different product
             val other = ImageFingerprint.mostSimilarOther(bmp, vm.products.value, vm.prints.value, id)
@@ -369,7 +373,7 @@ fun ProductEditScreen(
                                 )
                             }
                             Text(
-                                if (ImageFingerprint.modelReady) "مدل هوشمند فعال است." else "مدل هوشمند بارگذاری نشده؛ حالت رنگی فعال است.",
+                                ImageFingerprint.status(),
                                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
