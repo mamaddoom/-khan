@@ -31,6 +31,7 @@ import com.mozkhan.shop.data.StockMove
 import com.mozkhan.shop.util.Prefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -123,7 +124,10 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
      * Real round trip to the server: signs in (anonymous when a shop code is used), writes and reads a test document and
      * compares the number of products in the cloud with this phone. Returns a message that says what works or what to fix.
      */
-    suspend fun testConnection(): Result<String> = runCatching {
+    /** Runs in the app-wide scope: leaving the Settings screen must not cancel the test (that produced "The coroutine scope left the composition"). */
+    suspend fun testConnection(): Result<String> = scope.async { testConnectionInner() }.await()
+
+    private suspend fun testConnectionInner(): Result<String> = runCatching {
         check(hasApp()) { "ابتدا تنظیمات Firebase را ذخیره کنید" }
         withTimeout(20_000) {
             ensureAuth()
@@ -187,6 +191,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             val m = e?.message.orEmpty()
             return when {
                 e is kotlinx.coroutines.TimeoutCancellationException -> "پاسخی از سرور نیامد؛ اینترنت را بررسی کنید"
+                e is kotlinx.coroutines.CancellationException -> "عملیات نیمه‌کاره ماند؛ دوباره امتحان کنید"
                 e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED ->
                     "دسترسی رد شد: در Firebase بخش Firestore ← Rules را مطابق راهنما تنظیم و Publish کنید"
                 e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAVAILABLE -> "سرور در دسترس نیست؛ اینترنت را بررسی کنید"
