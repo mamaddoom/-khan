@@ -162,8 +162,8 @@ fun CafeScreen(vm: MainVm, onBack: () -> Unit) {
 
     ingredientDialog?.let { (item, _) -> IngredientDialog(vm, item, cur) { ingredientDialog = null } }
     restock?.let { p ->
-        RestockDialog(p, cur, askSell = false, onDismiss = { restock = null }) { qty, unitCost, newBuy, _, _, _, supplier ->
-            vm.restock(p.id, qty, unitCost, newBuy, null, null, null, supplier)
+        RestockDialog(p, cur, askSell = false, cheques = vm.cheques.collectAsState().value, onDismiss = { restock = null }) { qty, unitCost, newBuy, _, _, _, supplier, pay ->
+            vm.restock(p.id, qty, unitCost, newBuy, null, null, null, supplier, pay?.existingId, pay?.newCheque)
         }
     }
 }

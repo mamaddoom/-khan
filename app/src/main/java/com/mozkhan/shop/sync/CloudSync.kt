@@ -497,7 +497,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
 
     private fun fa(name: String) = when (name) {
         PRODUCTS -> "کالاها"; MOVES -> "حرکت انبار"; DOCS -> "اسناد انبار"; SALES -> "فاکتورها"; ITEMS -> "اقلام فاکتور"
-        EXPENSES -> "هزینه‌ها"; CUSTOMERS -> "مشتریان"; PAYMENTS -> "دریافتی‌ها"; RECIPES -> "دستور ساخت"; else -> name
+        EXPENSES -> "هزینه‌ها"; CUSTOMERS -> "مشتریان"; PAYMENTS -> "دریافتی‌ها"; RECIPES -> "دستور ساخت"; CHEQUES -> "چک‌ها"; else -> name
     }
 
     /** Queues every local row that the cloud lacks, has in an older version, or does not know to be voided/deleted yet. */
@@ -514,6 +514,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             CUSTOMERS -> pick(db.credit().allCustomers(), { it.id }, { it.updatedAt }, { it.deleted })
             PAYMENTS -> pick(db.credit().allPayments(), { it.id }, { it.updatedAt }, { it.deleted })
             RECIPES -> pick(db.recipes().all(), { it.id }, { it.updatedAt }, { it.deleted })
+            CHEQUES -> pick(db.cheques().all(), { it.id }, { it.updatedAt }, { it.deleted })
             else -> emptyList()
         }
         enqueue(name, ids)
@@ -537,6 +538,8 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
                 { p, f, t -> p.copy(deleted = f, updatedAt = t) }, { db.credit().upsertPayments(it) })
             RECIPES -> applyLww(RECIPES, parse { toRecipe() }, { db.recipes().item(it) }, { it.id }, { it.updatedAt }, { it.deleted },
                 { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.recipes().upsertAll(it) })
+            CHEQUES -> applyLww(CHEQUES, parse { toCheque() }, { db.cheques().get(it) }, { it.id }, { it.updatedAt }, { it.deleted },
+                { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.cheques().upsertAll(it) })
         }
     }
 
@@ -635,12 +638,13 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         CUSTOMERS -> db.credit().customersIn(ids).associate { it.id to it.toMap() }
         PAYMENTS -> db.credit().paymentsIn(ids).associate { it.id to it.toMap() }
         RECIPES -> db.recipes().itemsIn(ids).associate { it.id to it.toMap() }
+        CHEQUES -> db.cheques().chequesIn(ids).associate { it.id to it.toMap() }
         else -> emptyMap()
     }
 
     companion object {
         /** 4: documents carry `srv` (server write time) for incremental download; older apps must update */
-        const val SCHEMA = 5
+        const val SCHEMA = 6
 
         const val PRODUCTS = "products"
         const val MOVES = "moves"
@@ -651,8 +655,9 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         const val CUSTOMERS = "customers"
         const val PAYMENTS = "payments"
         const val RECIPES = "recipes"
+        const val CHEQUES = "cheques"
 
-        internal val COLLECTIONS = listOf(PRODUCTS, CUSTOMERS, SALES, ITEMS, MOVES, DOCS, EXPENSES, PAYMENTS, RECIPES)
+        internal val COLLECTIONS = listOf(PRODUCTS, CUSTOMERS, SALES, ITEMS, MOVES, DOCS, EXPENSES, PAYMENTS, RECIPES, CHEQUES)
 
         /** documents per Firestore batch (the hard limit is 500) */
         private const val BATCH = 400
@@ -772,10 +777,10 @@ internal fun StockMove.toMap(): Map<String, Any?> = mapOf(
 internal fun Map<String, Any?>.toMove() = StockMove(s("id"), s("productId"), dbl("qty"), s("reason"), sn("refId"), l("ts"), dbl("unitCost")).also { require(it.id.isNotEmpty()) }
 
 internal fun StockDoc.toMap(): Map<String, Any?> = mapOf(
-    "id" to id, "ts" to ts, "kind" to kind, "note" to note, "cost" to cost, "voided" to voided, "updatedAt" to updatedAt, "counted" to counted,
+    "id" to id, "ts" to ts, "kind" to kind, "note" to note, "cost" to cost, "voided" to voided, "updatedAt" to updatedAt, "counted" to counted, "chequeId" to chequeId,
 )
 
-internal fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s("note"), l("cost"), b("voided"), l("updatedAt", l("ts")), b("counted")).also { require(it.id.isNotEmpty()) }
+internal fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s("note"), l("cost"), b("voided"), l("updatedAt", l("ts")), b("counted"), (this["chequeId"] as? String)?.ifBlank { null }).also { require(it.id.isNotEmpty()) }
 
 internal fun Sale.toMap(): Map<String, Any?> = mapOf(
     "id" to id, "ts" to ts, "subtotal" to subtotal, "discount" to discount, "total" to total, "cost" to cost,
@@ -817,3 +822,13 @@ internal fun CreditPayment.toMap(): Map<String, Any?> = mapOf(
 )
 
 internal fun Map<String, Any?>.toPayment() = CreditPayment(s("id"), s("customerId"), l("amount"), l("ts"), s("note"), b("deleted"), l("updatedAt")).also { require(it.id.isNotEmpty()) }
+
+internal fun com.mozkhan.shop.data.Cheque.toMap(): Map<String, Any?> = mapOf(
+    "id" to id, "number" to number, "bank" to bank, "amount" to amount, "dueDate" to dueDate, "payee" to payee, "note" to note,
+    "status" to status, "ts" to ts, "deleted" to deleted, "updatedAt" to updatedAt,
+)
+
+internal fun Map<String, Any?>.toCheque() = com.mozkhan.shop.data.Cheque(
+    s("id"), s("number"), s("bank"), l("amount"), l("dueDate"), s("payee"), s("note"), s("status").ifBlank { "PENDING" },
+    l("ts"), b("deleted"), l("updatedAt", l("ts")),
+).also { require(it.id.isNotEmpty()) }

@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,12 +33,17 @@ fun MoreScreen(vm: MainVm, onGo: (String) -> Unit) {
     val cur by vm.currency.collectAsState()
     val debtors by vm.debtors.collectAsState()
     val debt = debtors.sumOf { it.debt.coerceAtLeast(0) }
+    val cheques by vm.cheques.collectAsState()
+    val dueSoon = cheques.filter { it.status == "PENDING" && chequeDaysLeft(it) <= 7 }
+    val advice by vm.buyAdvice.collectAsState()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("بیشتر", style = MaterialTheme.typography.headlineSmall)
         Item("کافه", "انبار مواد، دستور ساخت و قیمت تمام‌شدهٔ نوشیدنی‌ها", Icons.Filled.Coffee, MaterialTheme.extra.profit) { onGo("cafe") }
         Item("نسیه و مشتریان", if (debt > 0) "جمع بدهی: " + Fmt.money(debt, cur) else "ثبت بدهی و دریافتی مشتریان", Icons.Filled.Group, MaterialTheme.extra.warn) { onGo("credit") }
         Item("گزارش انبار", "ارزش موجودی، ورود و خروج، کمبود و راکد", Icons.Filled.Inventory, MaterialTheme.colorScheme.primary) { onGo("inventory") }
         Item("خروج از انبار", "ضایعات، مصرف شخصی، هدیه — بدون فروش", Icons.Filled.Outbox, MaterialTheme.colorScheme.secondary) { onGo("exits") }
+        Item("چک‌ها", if (dueSoon.isNotEmpty()) Fmt.digits("${dueSoon.size} چک تا ۷ روز آینده سررسید دارد") else "چک‌های خرید و تاریخ سررسید", Icons.Filled.Payments, if (dueSoon.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.extra.warn) { onGo("cheques") }
+        Item("پیشنهاد خرید", if (advice.more.isNotEmpty()) Fmt.digits("${advice.more.size} کالا را بیشتر بخرید، ${advice.less.size} کالا را کمتر") else "چه چیزی بیشتر و چه چیزی کمتر بخرید", Icons.Filled.ShoppingCart, MaterialTheme.extra.profit) { onGo("buy") }
         Item("تنظیمات", "واحد پول، تم، صدا، Google و پشتیبان", Icons.Filled.Settings, MaterialTheme.colorScheme.onSurfaceVariant) { onGo("settings") }
     }
 }

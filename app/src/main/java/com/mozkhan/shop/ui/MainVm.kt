@@ -302,14 +302,28 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun restock(
         productId: String, qty: Double, unitCost: Double, newBuy: Long, newSell: Long?, newBoxBuy: Long?, newBoxSell: Long?,
-        supplier: String, onDone: () -> Unit = {},
+        supplier: String, chequeId: String? = null, newCheque: com.mozkhan.shop.data.Cheque? = null, onDone: () -> Unit = {},
     ) = launch {
-        repo.restock(productId, qty, unitCost, newBuy, newSell, newBoxBuy, newBoxSell, supplier)
+        repo.restock(productId, qty, unitCost, newBuy, newSell, newBoxBuy, newBoxSell, supplier, chequeId, newCheque)
         fb.success(); onDone()
     }
 
     fun voidPurchase(docId: String) = launch { repo.voidPurchase(docId) }
     fun voidExit(docId: String) = launch { repo.voidExit(docId) }
+
+    // ------------------------------------------------------------------ cheques given to suppliers
+    val cheques: StateFlow<List<com.mozkhan.shop.data.Cheque>> = repo.cheques.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    fun saveCheque(c: com.mozkhan.shop.data.Cheque) = launch { repo.saveCheque(c) }
+    fun setChequeStatus(id: String, status: String) = launch { repo.setChequeStatus(id, status) }
+    fun deleteCheque(id: String) = launch { repo.deleteCheque(id) }
+
+    // ------------------------------------------------------------------ buying advice (last 30 days of sales)
+    val buyAdvice: StateFlow<com.mozkhan.shop.util.BuyAdvice> =
+        combine(repo.itemRows(System.currentTimeMillis() - 30L * 86_400_000L, Long.MAX_VALUE), products) { rows, prods ->
+            val sold = HashMap<String, Double>()
+            rows.forEach { sold[it.productId] = (sold[it.productId] ?: 0.0) + it.qty }
+            com.mozkhan.shop.util.BuyAdvisor.advise(prods, sold)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.mozkhan.shop.util.BuyAdvice())
 
     fun saveDrink(p: Product, lines: List<Pair<String, Double>>, onDone: () -> Unit = {}) = launch {
         repo.saveProduct(p)
