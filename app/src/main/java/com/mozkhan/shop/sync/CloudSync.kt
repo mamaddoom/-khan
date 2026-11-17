@@ -2,6 +2,9 @@ package com.mozkhan.shop.sync
 
 import android.app.Activity
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.room.withTransaction
@@ -70,6 +73,8 @@ data class SyncState(
     /** local changes the server has not confirmed yet */
     val pending: Int = 0,
     val error: String? = null,
+    /** really reaching the server: true / false, null = not checked yet (Firestore alone happily answers from its cache) */
+    val online: Boolean? = null,
 )
 
 /**
@@ -110,6 +115,49 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
     /** remote snapshots are applied one at a time, in the order they arrived */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val applyDispatcher = Dispatchers.IO.limitedParallelism(1)
+
+    // ---------------------------------------------------------------- online status
+    private val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+    private fun hasNetwork(): Boolean = runCatching {
+        val m = cm ?: return@runCatching true
+        val caps = m.getNetworkCapabilities(m.activeNetwork) ?: return@runCatching false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }.getOrDefault(true)
+
+    @Volatile private var probeJob: Job? = null
+
+    /** One cheap read from the SERVER (never the cache): the honest answer to "are we connected?". */
+    fun checkOnline() {
+        if (!active || probeJob?.isActive == true) return
+        probeJob = scope.launch(Dispatchers.IO) {
+            if (!hasNetwork()) { _state.update { it.copy(online = false) }; return@launch }
+            val ok = try {
+                withTimeout(15_000) {
+                    ensureAuth()
+                    val r = root()
+                    if (r == null) false else { r.collection("meta").document("app").get(Source.SERVER).await(); true }
+                }
+            } catch (e: Throwable) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                false
+            }
+            if (active) {
+                if (ok) clearErr(K_TEST)
+                _state.update { it.copy(online = ok) }
+            }
+        }
+    }
+
+    init {
+        // network lost -> red at once; network back -> verify with the server (a Wi-Fi without internet is not "online")
+        runCatching {
+            cm?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+                override fun onLost(network: Network) { if (active && !hasNetwork()) _state.update { it.copy(online = false) } }
+                override fun onAvailable(network: Network) { scope.launch { delay(2_000); checkOnline() } }
+            })
+        }
+    }
 
     // ---------------------------------------------------------------- errors (sticky, per source)
     private val errors = ConcurrentHashMap<String, String>()
@@ -221,9 +269,9 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             "اتصال برقرار است ✓  کالا در ابر: $cloud • روی این گوشی: $local  |  فاکتور در ابر: $cloudSales • روی این گوشی: $localSales" +
                 if (queued > 0) "  |  در صف ارسال: $queued" else ""
         }
-    }.onSuccess { clearErr(K_TEST); clearErr(K_START) }
+    }.onSuccess { clearErr(K_TEST); clearErr(K_START); _state.update { it.copy(online = true) } }
         .recoverCatching { throw IllegalStateException(explain(it)) }
-        .onFailure { setErr(K_TEST, it.message ?: "خطای ناشناخته") }
+        .onFailure { e -> setErr(K_TEST, e.message ?: "خطای ناشناخته"); _state.update { it.copy(online = false) } }
 
     // ---------------------------------------------------------------- lifecycle
     fun start() {
@@ -231,7 +279,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         active = true
         val g = gen.incrementAndGet()
         errors.keys.removeAll { it != K_CONFIG } // a fresh start re-checks everything
-        _state.update { it.copy(running = true, ready = false, email = currentEmail()) }
+        _state.update { it.copy(running = true, ready = false, online = null, email = currentEmail()) }
         publishErr()
         runJob = scope.launch(Dispatchers.IO) {
             val r = connect(g) ?: return@launch
@@ -243,6 +291,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
                 for (c in COLLECTIONS) listen(r, c, g, serverNow, 0)
             }
             _state.update { it.copy(ready = true, pending = db.outbox().count(), email = currentEmail()) }
+            checkOnline()
             upload(r, g)
         }
     }
@@ -306,7 +355,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             regs.clear()
         }
         active = false
-        _state.update { it.copy(running = false, ready = false) }
+        _state.update { it.copy(running = false, ready = false, online = null) }
     }
 
     /** Reconnects (cheap: only what changed since the last time is read). Does nothing while sync is switched off. */
@@ -333,14 +382,22 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             !hasApp() -> "همگام‌سازی ابری تنظیم نشده است (تنظیمات ← Google)"
             !prefs.cloudSync.value -> "همگام‌سازی خاموش است (تنظیمات ← همگام‌سازی خودکار)"
             else -> {
-                if (!active || errors.keys.any { it == K_START || it.startsWith(K_LISTEN) }) { stop(); start() }
-                val done = withTimeoutOrNull(timeoutMs) { state.first { it.ready && it.pending == 0 } } != null
-                val s = _state.value
-                when {
-                    s.error != null -> "همگام‌سازی ناموفق: ${s.error}"
-                    !done && s.pending > 0 -> "${s.pending} مورد هنوز ارسال نشده؛ در پس‌زمینه ادامه دارد (اینترنت کند یا قطع است)"
-                    !done -> "اتصال به سرور برقرار نشد؛ در پس‌زمینه دوباره تلاش می‌شود"
-                    else -> "همگام‌سازی انجام شد"
+                val restart = !active || errors.keys.any { it == K_START || it.startsWith(K_LISTEN) }
+                // the same real server round trip as "test connection" in Settings (Firestore's cache can not fake it)
+                val test = testConnectionInner()
+                if (test.isFailure) {
+                    if (!active) start() // keeps retrying in the background
+                    "اتصال برقرار نیست: ${test.exceptionOrNull()?.message}"
+                } else {
+                    if (restart) { stop(); start() }
+                    val done = withTimeoutOrNull(timeoutMs) { state.first { it.ready && it.pending == 0 } } != null
+                    val s = _state.value
+                    test.getOrDefault("") + "\n" + when {
+                        s.error != null -> "همگام‌سازی ناموفق: ${s.error}"
+                        !done && s.pending > 0 -> "${s.pending} مورد هنوز ارسال نشده؛ در پس‌زمینه ادامه دارد"
+                        !done -> "همگام‌سازی در پس‌زمینه ادامه دارد"
+                        else -> "همگام‌سازی انجام شد"
+                    }
                 }
             }
         }
@@ -405,6 +462,9 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             if (snap == null) return@addSnapshotListener
             val fromServer = !snap.metadata.isFromCache
             if (fromServer) clearErr(K_LISTEN + name)
+            // a server answer means online; a cache-only answer after being online means the connection was lost
+            if (fromServer) { if (_state.value.online != true) { clearErr(K_TEST); _state.update { it.copy(online = true) } } }
+            else if (_state.value.online == true) _state.update { it.copy(online = false) }
             val changed = snap.documentChanges.filter { it.type != DocumentChange.Type.REMOVED }.map { it.document }
             var newest = 0L
             if (fromServer) for (d in changed) {

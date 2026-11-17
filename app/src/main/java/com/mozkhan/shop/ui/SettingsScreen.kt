@@ -156,12 +156,12 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
             SwitchRow("افزودن خودکار کالا به فاکتور (بدون تأیید)", auto) { prefs.autoAdd = it }
             val vision by prefs.visionLevel.collectAsState()
             Text("حساسیت تشخیص تصویری کالا", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0 to "راحت‌گیر", 1 to "متعادل", 2 to "سخت‌گیر").forEach { (v, label) ->
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf(3 to "خیلی راحت‌گیر", 0 to "راحت‌گیر", 1 to "متعادل", 2 to "سخت‌گیر")) { (v, label) ->
                     FilterChip(vision == v, { prefs.setVisionLevel(v) }, label = { Text(label) })
                 }
             }
-            Text("اگر کالا را دیر شناخت «راحت‌گیر»، و اگر کالای اشتباه پیشنهاد داد «سخت‌گیر» را بزنید.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("اگر کالا را دیر شناخت «راحت‌گیر» یا «خیلی راحت‌گیر» (پیشنهاد سریع‌تر، با یک بار دیدن تأیید باز می‌شود)، و اگر کالای اشتباه پیشنهاد داد «سخت‌گیر» را بزنید.",style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val modelVer by com.mozkhan.shop.ml.ImageFingerprint.changes.collectAsState()
             Text(com.mozkhan.shop.ml.ImageFingerprint.status().also { modelVer.hashCode() }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedButton(onClick = {
@@ -182,11 +182,14 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                IconBadge(if (st.running) Icons.Filled.CloudDone else Icons.Filled.CloudOff, if (st.running) MaterialTheme.extra.profit else MaterialTheme.colorScheme.outline, size = 40)
+                val linkedNow = st.running && st.online == true
+                IconBadge(if (linkedNow) Icons.Filled.CloudDone else Icons.Filled.CloudOff, if (linkedNow) MaterialTheme.extra.profit else MaterialTheme.colorScheme.outline, size = 40)
                 Column(Modifier.weight(1f)) {
                     Text(
                         when {
                             !st.available -> "هنوز به Google/Firebase وصل نشده"
+                            st.running && st.online == false -> "فعال، ولی اتصال به سرور قطع است"
+                            st.running && st.online == null -> "فعال، در حال بررسی اتصال…"
                             st.running -> "فعال و متصل"
                             st.email != null || prefs.shopCode.isNotEmpty() -> "متصل شده، همگام‌سازی خاموش است"
                             else -> "کد فروشگاه یا حساب Google تنظیم نشده"

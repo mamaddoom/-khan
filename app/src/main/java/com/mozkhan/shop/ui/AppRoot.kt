@@ -155,13 +155,21 @@ fun AppRoot(vm: MainVm, activity: Activity) {
 
     // pull down on any screen to sync the database now (like Instagram / YouTube)
     var refreshing by remember { mutableStateOf(false) }
+    val pullState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val onPullRefresh: () -> Unit = {
         if (!refreshing) {
             refreshing = true
             scope.launch {
-                // waits for the real upload (max ~25 s) instead of a fixed delay; never starts sync that was switched off
-                val msg = try { vm.sync.refresh() } finally { refreshing = false }
+                // real server round trip (same as "test connection") + waits for the upload; never starts sync that was switched off
+                val msg = try {
+                    vm.sync.refresh()
+                } finally {
+                    refreshing = false
+                    // an answer that came back at once never let the indicator see "refreshing": hide it explicitly,
+                    // otherwise the spinner stays stuck at the top
+                    runCatching { pullState.animateToHidden() }
+                }
                 Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
             }
         }
@@ -183,7 +191,7 @@ fun AppRoot(vm: MainVm, activity: Activity) {
             }
         },
     ) { pad ->
-        PullToRefreshBox(isRefreshing = refreshing, onRefresh = onPullRefresh, modifier = Modifier.padding(pad).statusBarsPadding()) {
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = onPullRefresh, state = pullState, modifier = Modifier.padding(pad).statusBarsPadding()) {
         NavHost(
             nav, startDestination = "home", modifier = Modifier,
             // no 700ms cross-fade between screens: switching tabs is instant
@@ -226,12 +234,13 @@ fun AppRoot(vm: MainVm, activity: Activity) {
                 )
             }
         }
-        // tiny server-status dot: green = connected, red = error, gray = sync off
+        // tiny server-status dot: green = server really reached, red = error / no connection, amber = checking, gray = sync off
         val ss by vm.sync.state.collectAsState()
         val dot = when {
-            ss.error != null -> Color(0xFFE53935)
-            ss.running -> Color(0xFF2ECC71)
-            else -> Color(0xFF9E9E9E)
+            !ss.running -> Color(0xFF9E9E9E)
+            ss.error != null || ss.online == false -> Color(0xFFE53935)
+            ss.online == true -> Color(0xFF2ECC71)
+            else -> Color(0xFFFFB300)
         }
         Box(Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 6.dp).size(7.dp).clip(CircleShape).background(dot))
         }
