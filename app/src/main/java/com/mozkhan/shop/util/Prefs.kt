@@ -98,6 +98,16 @@ class Prefs(ctx: Context) {
     /** Shared secret that links phones to one cloud shop without a Google account. */
     var shopCode: String get() = sp.getString("shop_code", "") ?: ""; set(v) { sp.edit().putString("shop_code", v).apply() }
 
+    // ---- incremental sync: per (cloud folder, collection) the newest server time already applied on this phone
+    fun syncCursor(key: String): Long = sp.getLong("sync_cur_$key", 0L)
+    fun setSyncCursor(key: String, v: Long) { sp.edit().putLong("sync_cur_$key", v).apply() }
+    /** forgets every cursor: the next start downloads each collection once in full and uploads what the cloud lacks */
+    fun clearSyncCursors() {
+        val e = sp.edit()
+        sp.all.keys.filter { it.startsWith("sync_cur_") }.forEach { e.remove(it) }
+        e.apply()
+    }
+
     companion object {
         fun newShopCode(): String {
             val chars = "abcdefghjkmnpqrstuvwxyz23456789"

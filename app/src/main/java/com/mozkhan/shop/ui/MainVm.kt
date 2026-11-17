@@ -126,18 +126,22 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     /** every non-deleted product, cafe ingredients included */
     val allProducts: StateFlow<List<ProductWithStock>> =
-        repo.products.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        repo.products.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** shop + cafe menu items (never ingredients) */
     val products: StateFlow<List<ProductWithStock>> =
-        allProducts.map { l -> l.filter { it.kind != KIND_INGREDIENT } }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        allProducts.map { l -> l.filter { it.kind != KIND_INGREDIENT } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val ingredients: StateFlow<List<ProductWithStock>> =
         allProducts.map { l -> l.filter { it.kind == KIND_INGREDIENT } }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    /** product id -> stored reference fingerprints (kept out of the product list so stock changes stay cheap) */
+    /**
+     * product id -> stored reference fingerprints (kept out of the product list so stock changes stay cheap).
+     * EAGERLY: no screen collects this flow, the camera callbacks only read `.value`. With WhileSubscribed it never
+     * started, stayed an empty map, and image recognition could never match anything. [products] is read the same way.
+     */
     val prints: StateFlow<Map<String, String>> =
-        repo.prints.map { l -> l.associate { it.id to it.fingerprints } }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+        repo.prints.map { l -> l.associate { it.id to it.fingerprints } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     val recipes: StateFlow<List<RecipeItem>> =
         repo.recipeItems.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

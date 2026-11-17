@@ -311,6 +311,18 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                         OutlinedButton(onClick = { prefs.setCloudSync(false); vm.sync.signOut() }, modifier = Modifier.weight(1f)) { Text("خروج از حساب") }
                     }
                 }
+                if (st.pending > 0) {
+                    Text(
+                        "${Fmt.digits(st.pending.toString())} تغییر این گوشی هنوز به ابر نرسیده؛ با برقراری اینترنت خودکار ارسال می‌شود.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (cloud && (prefs.shopCode.isNotEmpty() || st.email != null)) {
+                    // repair tool: reads every collection once and uploads what the cloud lacks (costs reads, so not automatic)
+                    OutlinedButton(onClick = { vm.sync.fullResync(); toast("همگام‌سازی کامل شروع شد؛ چند لحظه صبر کنید") }, modifier = Modifier.fillMaxWidth()) {
+                        Text("همگام‌سازی کامل (مقایسهٔ همهٔ اطلاعات با ابر)")
+                    }
+                }
                 st.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Text("بدون اینترنت هم می‌توانید کار کنید؛ تغییرات پس از اتصال خودکار ارسال می‌شود.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

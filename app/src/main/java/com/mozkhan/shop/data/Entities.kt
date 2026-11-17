@@ -169,6 +169,19 @@ data class CreditPayment(
     val updatedAt: Long = System.currentTimeMillis(),
 )
 
+/**
+ * Durable upload queue for cloud sync. Every local change records (collection, document id) here IN THE SAME transaction
+ * as the change itself, so nothing can be lost when the app is killed, offline or not yet signed in. The uploader always
+ * sends the row's CURRENT content and deletes the entry only after the server confirmed it. Re-marking a document replaces
+ * its entry with a new [seq], so a change made while an older version is in flight is never dropped.
+ */
+@Entity(tableName = "outbox", indices = [Index(value = ["coll", "docId"], unique = true)])
+data class OutboxRow(
+    @PrimaryKey(autoGenerate = true) val seq: Long = 0,
+    val coll: String,
+    val docId: String,
+)
+
 // ---- query projections ----
 data class ProductWithStock(
     val id: String,
