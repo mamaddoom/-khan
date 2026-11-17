@@ -9,16 +9,19 @@ import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.MetadataChanges
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.mozkhan.shop.data.AppDb
@@ -26,6 +29,7 @@ import com.mozkhan.shop.data.CreditPayment
 import com.mozkhan.shop.data.Customer
 import com.mozkhan.shop.data.Expense
 import com.mozkhan.shop.data.Measure
+import com.mozkhan.shop.data.OutboxRow
 import com.mozkhan.shop.data.Product
 import com.mozkhan.shop.data.RecipeItem
 import com.mozkhan.shop.data.Sale
@@ -33,20 +37,26 @@ import com.mozkhan.shop.data.SaleItem
 import com.mozkhan.shop.data.StockDoc
 import com.mozkhan.shop.data.StockMove
 import com.mozkhan.shop.util.Prefs
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -54,26 +64,32 @@ data class SyncState(
     val available: Boolean = false,
     val email: String? = null,
     val running: Boolean = false,
+    /** connected: listeners attached and the uploader is running */
+    val ready: Boolean = false,
     val lastSync: Long = 0,
+    /** local changes the server has not confirmed yet */
+    val pending: Int = 0,
     val error: String? = null,
 )
 
 /**
- * Optional multi-phone sync through Firebase (Google account + Firestore).
- * Firebase can be configured either at build time (google-services.json) or at runtime from
- * Settings -> Google (API key / App id / Project id / Web client id).
+ * Optional multi-phone sync through Firebase Firestore (shop code with anonymous auth, or a Google account).
  *
- * Firestore keeps its own offline cache & queue, so writes made without internet are
- * uploaded automatically once the connection returns.
+ * UPLOAD — durable outbox. Every local change records (collection, id) in the `outbox` table inside the same database
+ * transaction as the change ([enqueue]). One uploader drains it in batches, always sending the row's CURRENT content, and
+ * deletes an entry only after the server confirmed the batch. So nothing is lost when the app is killed, starts offline,
+ * is not signed in yet, or Firestore rejects a write (it is retried with back-off and the reason is shown).
+ * Before, a change made while sync was not connected was silently dropped.
  *
- * Conflict model:
- *  - stock_moves / sale_items are immutable & append-only  -> merged without conflicts
- *  - products / expenses / sales / docs / customers / payments / recipes use last-writer-wins on `updatedAt`, except that
- *    the voided / deleted flag is STICKY: once an invoice is voided (or a row deleted) on any phone it stays so, even when
- *    the other phone's clock is ahead (see [SyncRules]).
+ * DOWNLOAD — incremental. Every uploaded document carries `srv` = server time of its last write. Each collection is
+ * listened to with `srv > cursor` (the newest server time already applied on this phone, stored per cloud folder), so a
+ * restart / pull-to-refresh only reads what changed. Before, every start re-downloaded EVERY invoice, line and stock move;
+ * on the free Firebase plan that used up the daily read quota within days, and from then on new invoices simply stopped
+ * arriving on the other phone. A collection without a cursor (first link, or "full sync" in Settings) is read once in
+ * full and compared with this phone: whatever the cloud lacks or has older is queued for upload.
  *
- * Every write reports its failure in [SyncState.error]; errors stay visible until the thing that failed works again
- * (they are no longer wiped by the next successful snapshot of an unrelated collection).
+ * CONFLICTS — stock moves / invoice lines are immutable (merge without conflicts); other rows use last-writer-wins on
+ * `updatedAt`, except that voided / deleted is STICKY (see [SyncRules]).
  */
 class CloudSync(private val ctx: Context, private val db: AppDb, private val scope: CoroutineScope, private val prefs: Prefs) {
 
@@ -84,7 +100,8 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
     private val _state = MutableStateFlow(SyncState(available = hasApp(), email = currentEmail()))
     val state: StateFlow<SyncState> = _state.asStateFlow()
 
-    private val regs = mutableListOf<ListenerRegistration>()
+    /** collection -> live listener */
+    private val regs = ConcurrentHashMap<String, ListenerRegistration>()
     @Volatile private var active = false
     /** bumped by every start/stop: work of an older start must never register listeners or upload afterwards */
     private val gen = AtomicInteger(0)
@@ -106,10 +123,6 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         if (errors.remove(key) != null) publishErr()
     }
 
-    private fun clearErrs(prefix: String) {
-        if (errors.keys.removeAll { it.startsWith(prefix) }) publishErr()
-    }
-
     private fun publishErr() {
         val e = errors.entries.sortedBy { it.key }.firstOrNull()?.value
         _state.update { it.copy(error = e) }
@@ -129,6 +142,10 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         val u = FirebaseAuth.getInstance().currentUser ?: return null
         return FirebaseFirestore.getInstance().collection("shops").document(u.uid)
     }
+
+    /** This phone belongs to a cloud folder: its changes are queued for upload, also while sync is paused or offline. */
+    private fun linked(): Boolean = hasApp() &&
+        (prefs.shopCode.isNotBlank() || runCatching { FirebaseAuth.getInstance().currentUser != null }.getOrDefault(false))
 
     /** Firestore rules need *some* auth; with a shop code we use silent anonymous auth (no Google, no prompt). */
     private suspend fun ensureAuth() {
@@ -165,10 +182,22 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         clearErr(K_CONFIG)
     }.onFailure { setErr(K_CONFIG, it.message ?: "تنظیمات Firebase نامعتبر است") }
 
+    // ---------------------------------------------------------------- outbox (local -> cloud)
+    /**
+     * Queues documents for upload. Call it INSIDE the database transaction that changed them (see [OutboxRow]).
+     * The uploader notices new entries by itself (Room invalidation fires after the commit).
+     */
+    suspend fun enqueue(coll: String, ids: Collection<String>) {
+        if (ids.isEmpty() || !linked()) return
+        db.outbox().add(ids.distinct().map { OutboxRow(coll = coll, docId = it) })
+    }
+
+    suspend fun enqueue(coll: String, id: String) = enqueue(coll, listOf(id))
+
     /**
      * Real round trip to the server: signs in (anonymous when a shop code is used), writes and reads a test document and
      * compares the number of products / invoices in the cloud with this phone. Returns a message that says what works or what to fix.
-     * Runs in the app-wide scope: leaving the Settings screen must not cancel the test (that produced "The coroutine scope left the composition").
+     * Runs in the app-wide scope: leaving the Settings screen must not cancel the test.
      */
     suspend fun testConnection(): Result<String> = scope.async { testConnectionInner() }.await()
 
@@ -181,14 +210,16 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             ping.set(mapOf("ts" to System.currentTimeMillis(), "from" to android.os.Build.MODEL)).await()
             check(ping.get(Source.SERVER).await().exists()) { "نوشتن انجام شد اما خواندن از سرور ممکن نشد" }
             // a test WRITE into the invoice collection: rules that only allow some collections show up here
-            r.collection("sales").document("_ping").set(mapOf("ts" to System.currentTimeMillis())).await()
-            r.collection("sales").document("_ping").delete().await()
+            r.collection(SALES).document("_ping").set(mapOf("ts" to System.currentTimeMillis())).await()
+            r.collection(SALES).document("_ping").delete().await()
             // count queries: a few reads instead of downloading whole collections (free daily quota)
-            val cloud = r.collection("products").count().get(AggregateSource.SERVER).await().count
-            val cloudSales = r.collection("sales").count().get(AggregateSource.SERVER).await().count
+            val cloud = r.collection(PRODUCTS).count().get(AggregateSource.SERVER).await().count
+            val cloudSales = r.collection(SALES).count().get(AggregateSource.SERVER).await().count
             val local = db.products().allRaw().size
             val localSales = db.sales().allSales().size
-            "اتصال برقرار است ✓  کالا در ابر: $cloud • روی این گوشی: $local  |  فاکتور در ابر: $cloudSales • روی این گوشی: $localSales"
+            val queued = db.outbox().count()
+            "اتصال برقرار است ✓  کالا در ابر: $cloud • روی این گوشی: $local  |  فاکتور در ابر: $cloudSales • روی این گوشی: $localSales" +
+                if (queued > 0) "  |  در صف ارسال: $queued" else ""
         }
     }.onSuccess { clearErr(K_TEST); clearErr(K_START) }
         .recoverCatching { throw IllegalStateException(explain(it)) }
@@ -200,89 +231,70 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         active = true
         val g = gen.incrementAndGet()
         errors.keys.removeAll { it != K_CONFIG } // a fresh start re-checks everything
-        _state.update { it.copy(running = true, email = currentEmail()) }
+        _state.update { it.copy(running = true, ready = false, email = currentEmail()) }
         publishErr()
         runJob = scope.launch(Dispatchers.IO) {
-            val r = runCatching { ensureAuth(); root() }.getOrElse {
-                failStart(g, explain(it))
-                return@launch
-            }
-            if (r == null) {
-                failStart(g, "کد فروشگاه یا حساب Google تنظیم نشده است")
-                return@launch
-            }
-            // Schema gate: a phone running an OLDER app must never write into data that a newer app already upgraded.
-            val meta = r.collection("meta").document("app")
-            val remote = runCatching { (meta.get().await().get("schema") as? Number)?.toInt() ?: 0 }
-                .onFailure { if (it is FirebaseFirestoreException && it.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) setErr(K_START, explain(it)) }
-                .getOrDefault(0)
-            if (remote > SCHEMA) {
-                failStart(g, "لطفاً برنامه را به‌روزرسانی کنید؛ اطلاعات ابری با نسخهٔ جدیدتری ذخیره شده است")
-                return@launch
-            }
+            val r = connect(g) ?: return@launch
             if (gen.get() != g) return@launch
-            if (remote < SCHEMA) write(meta, mapOf("schema" to SCHEMA))
-            val first = HashMap<String, CompletableDeferred<Map<String, RemoteMeta>>>()
+            // the server's clock: the cursor of a collection read in full starts there (phone clocks can be wrong)
+            val serverNow = if (COLLECTIONS.any { prefs.syncCursor(cursorKey(r, it)) == 0L }) serverTime(r) else 0L
             synchronized(regs) {
                 if (gen.get() != g) return@launch
-                for (c in COLLECTIONS) {
-                    val d = CompletableDeferred<Map<String, RemoteMeta>>()
-                    first[c] = d
-                    listen(r, c, g, d)
-                }
+                for (c in COLLECTIONS) listen(r, c, g, serverNow, 0)
             }
-            runCatching { pushAllLocal(r, g, first) }.onFailure {
-                if (it !is kotlinx.coroutines.CancellationException) setErr(K_PUSH, "ارسال اطلاعات این گوشی ناموفق: " + explain(it))
+            _state.update { it.copy(ready = true, pending = db.outbox().count(), email = currentEmail()) }
+            upload(r, g)
+        }
+    }
+
+    /** Signs in and passes the schema gate. Network problems are retried with back-off (a phone that starts offline syncs later by itself). */
+    private suspend fun connect(g: Int): DocumentReference? {
+        var wait = 5_000L
+        while (gen.get() == g) {
+            try {
+                withTimeout(30_000) { ensureAuth() }
+                val r = root()
+                if (r == null) {
+                    failStart(g, "کد فروشگاه یا حساب Google تنظیم نشده است")
+                    return null
+                }
+                // Schema gate: a phone running an OLDER app must never write into data that a newer app already upgraded.
+                val meta = r.collection("meta").document("app")
+                val remote = withTimeout(30_000) { (meta.get().await().get("schema") as? Number)?.toInt() ?: 0 }
+                if (remote > SCHEMA) {
+                    failStart(g, "لطفاً برنامه را به‌روزرسانی کنید؛ اطلاعات ابری با نسخهٔ جدیدتری ذخیره شده است")
+                    return null
+                }
+                if (remote < SCHEMA) withTimeout(30_000) { meta.set(mapOf("schema" to SCHEMA), SetOptions.merge()).await() }
+                clearErr(K_START)
+                return r
+            } catch (e: Throwable) {
+                if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                if (gen.get() != g) return null
+                setErr(K_START, explain(e))
+                delay(wait)
+                wait = minOf(wait * 2, 300_000L)
             }
         }
+        return null
+    }
+
+    private suspend fun serverTime(r: DocumentReference): Long = try {
+        withTimeout(20_000) {
+            val d = r.collection("meta").document("clock")
+            d.set(mapOf("t" to FieldValue.serverTimestamp())).await()
+            d.get(Source.SERVER).await().getTimestamp("t")?.toDate()?.time ?: 0L
+        }
+    } catch (e: Throwable) {
+        if (e is CancellationException && e !is TimeoutCancellationException) throw e
+        0L
     }
 
     private fun failStart(g: Int, msg: String) {
         if (gen.get() != g) return
         active = false
-        _state.update { it.copy(running = false) }
+        _state.update { it.copy(running = false, ready = false) }
         setErr(K_START, msg)
-    }
-
-    companion object {
-        const val SCHEMA = 3
-
-        internal val COLLECTIONS = listOf("products", "moves", "docs", "sales", "items", "expenses", "customers", "payments", "recipes")
-
-        // error keys: sorted, the first one is shown
-        private const val K_CONFIG = "0config"
-        private const val K_TEST = "0test"
-        private const val K_SIGNIN = "0signin"
-        private const val K_START = "1start"
-        private const val K_LISTEN = "2listen:"
-        private const val K_WRITE = "3write"
-        private const val K_PUSH = "4push"
-        private const val K_APPLY = "5apply:"
-
-        /** Turns Firebase exceptions into a Persian message that says what to fix. */
-        fun explain(e: Throwable?): String {
-            val m = e?.message.orEmpty()
-            return when {
-                e is kotlinx.coroutines.TimeoutCancellationException -> "پاسخی از سرور نیامد؛ اینترنت را بررسی کنید"
-                e is kotlinx.coroutines.CancellationException -> "عملیات نیمه‌کاره ماند؛ دوباره امتحان کنید"
-                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED ->
-                    "دسترسی رد شد: در Firebase بخش Firestore ← Rules را مطابق راهنما تنظیم و Publish کنید"
-                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.RESOURCE_EXHAUSTED ->
-                    "سهمیهٔ روزانهٔ Firebase تمام شده است؛ فردا خودکار ادامه می‌یابد (یا در Firebase طرح Blaze را فعال کنید)"
-                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAVAILABLE -> "سرور در دسترس نیست؛ اینترنت را بررسی کنید"
-                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAUTHENTICATED ->
-                    "ورود به Firebase انجام نشده است؛ «آزمایش اتصال» را بزنید"
-                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.INVALID_ARGUMENT -> "سرور دادهٔ ارسالی را نپذیرفت: $m"
-                e is FirebaseFirestoreException && (e.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION || e.code == FirebaseFirestoreException.Code.NOT_FOUND) ->
-                    "Firestore Database هنوز ساخته نشده است (Firebase ← Build ← Firestore Database ← Create database)"
-                m.contains("OPERATION_NOT_ALLOWED", true) || m.contains("sign-in provider is disabled", true) || m.contains("admin-restricted", true) ->
-                    "ورود ناشناس فعال نیست: Firebase ← Authentication ← Sign-in method ← Anonymous را Enable کنید"
-                m.contains("API key", true) && (m.contains("not valid", true) || m.contains("invalid", true)) -> "API key اشتباه است"
-                m.contains("CONFIGURATION_NOT_FOUND", true) -> "Authentication در پروژهٔ Firebase راه‌اندازی نشده (Get started را بزنید)"
-                m.contains("network", true) || m.contains("Unable to resolve host", true) -> "اینترنت برقرار نیست"
-                else -> m.ifBlank { e?.javaClass?.simpleName ?: "خطای ناشناخته" }
-            }
-        }
     }
 
     fun stop() {
@@ -290,35 +302,44 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         runJob?.cancel()
         runJob = null
         synchronized(regs) {
-            regs.forEach { it.remove() }
+            regs.values.forEach { it.remove() }
             regs.clear()
         }
         active = false
-        _state.update { it.copy(running = false) }
+        _state.update { it.copy(running = false, ready = false) }
     }
 
-    /** Re-uploads everything local and re-attaches the listeners. Does nothing while sync is switched off. */
+    /** Reconnects (cheap: only what changed since the last time is read). Does nothing while sync is switched off. */
     fun syncNow() {
         if (!prefs.cloudSync.value) return
         stop(); start()
     }
 
     /**
-     * Pull-to-refresh: restarts sync and waits (at most [timeoutMs]) until this phone's missing rows were uploaded.
-     * Returns a message for the user. Runs in the app scope so leaving the screen cannot cancel it.
+     * Forgets what was already downloaded: every collection is read once in full, compared with this phone, and whatever
+     * the cloud lacks or has older is uploaded. For repairs after restoring a backup or when the phones disagree.
+     */
+    fun fullResync() {
+        prefs.clearSyncCursors()
+        syncNow()
+    }
+
+    /**
+     * Pull-to-refresh: (re)connects when needed and waits (at most [timeoutMs]) until every local change was confirmed by
+     * the server. Returns a message for the user. Runs in the app scope so leaving the screen cannot cancel it.
      */
     suspend fun refresh(timeoutMs: Long = 25_000): String = scope.async {
         when {
             !hasApp() -> "همگام‌سازی ابری تنظیم نشده است (تنظیمات ← Google)"
             !prefs.cloudSync.value -> "همگام‌سازی خاموش است (تنظیمات ← همگام‌سازی خودکار)"
             else -> {
-                syncNow()
-                val job = runJob
-                val done = job == null || withTimeoutOrNull(timeoutMs) { job.join(); true } == true
-                val err = _state.value.error
+                if (!active || errors.keys.any { it == K_START || it.startsWith(K_LISTEN) }) { stop(); start() }
+                val done = withTimeoutOrNull(timeoutMs) { state.first { it.ready && it.pending == 0 } } != null
+                val s = _state.value
                 when {
-                    err != null -> "همگام‌سازی ناموفق: $err"
-                    !done -> "همگام‌سازی در پس‌زمینه ادامه دارد (اینترنت کند یا قطع است)"
+                    s.error != null -> "همگام‌سازی ناموفق: ${s.error}"
+                    !done && s.pending > 0 -> "${s.pending} مورد هنوز ارسال نشده؛ در پس‌زمینه ادامه دارد (اینترنت کند یا قطع است)"
+                    !done -> "اتصال به سرور برقرار نشد؛ در پس‌زمینه دوباره تلاش می‌شود"
                     else -> "همگام‌سازی انجام شد"
                 }
             }
@@ -351,186 +372,267 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         _state.update { it.copy(email = email) }
         clearErr(K_SIGNIN)
         email
-    }.onFailure { if (it !is kotlinx.coroutines.CancellationException) setErr(K_SIGNIN, it.message ?: "ورود ناموفق بود") }
+    }.onFailure { if (it !is CancellationException) setErr(K_SIGNIN, it.message ?: "ورود ناموفق بود") }
+
+    // ---------------------------------------------------------------- download (cloud -> local)
+    private fun cursorKey(r: DocumentReference, coll: String) = r.id + "_" + coll
 
     /**
-     * Listens to one collection. Only the CHANGED documents of each snapshot are applied (the first snapshot contains
-     * every document). The first snapshot confirmed by the server also tells [pushAllLocal] what the cloud already has,
-     * so the collection is not downloaded a second time just to compare.
+     * Listens to one collection: in full when it has no cursor yet, otherwise only to documents written after the cursor.
+     * Only CHANGED documents of each snapshot are applied. The cursor moves on only after the documents were stored, so a
+     * failure re-reads them next time instead of skipping them. A listener that Firestore ends with an error (quota,
+     * permission, network) is re-attached with back-off.
      */
-    private fun listen(r: DocumentReference, name: String, g: Int, first: CompletableDeferred<Map<String, RemoteMeta>>) {
-        regs += r.collection(name).addSnapshotListener(MetadataChanges.INCLUDE) { snap, err ->
+    private fun listen(r: DocumentReference, name: String, g: Int, serverNow: Long, attempt: Int) {
+        val key = cursorKey(r, name)
+        val cur = prefs.syncCursor(key)
+        val full = cur == 0L
+        val q: Query = if (full) r.collection(name)
+        else r.collection(name).whereGreaterThan("srv", Timestamp(Date(cur - CURSOR_MARGIN_MS)))
+        var reconciled = false
+        regs[name] = q.addSnapshotListener(MetadataChanges.INCLUDE) { snap, err ->
             if (gen.get() != g) return@addSnapshotListener
             if (err != null) {
-                // Firestore ends a listener after an error: keep the message until the next (re)start
                 setErr(K_LISTEN + name, "دریافت «${fa(name)}» متوقف شد: " + explain(err))
-                first.completeExceptionally(err)
+                regs.remove(name)?.remove()
+                val wait = minOf(30_000L shl attempt.coerceAtMost(4), 600_000L)
+                scope.launch {
+                    delay(wait)
+                    synchronized(regs) { if (gen.get() == g && active && !regs.containsKey(name)) listen(r, name, g, serverNow, attempt + 1) }
+                }
                 return@addSnapshotListener
             }
             if (snap == null) return@addSnapshotListener
-            if (!snap.metadata.isFromCache && !first.isCompleted) {
-                first.complete(snap.documents.associate { d -> d.id to RemoteMeta.of(d) })
-            }
+            val fromServer = !snap.metadata.isFromCache
+            if (fromServer) clearErr(K_LISTEN + name)
             val changed = snap.documentChanges.filter { it.type != DocumentChange.Type.REMOVED }.map { it.document }
-            if (changed.isEmpty()) return@addSnapshotListener
+            var newest = 0L
+            if (fromServer) for (d in changed) {
+                if (d.metadata.hasPendingWrites()) continue
+                val t = d.getTimestamp("srv")?.toDate()?.time ?: continue
+                if (t > newest) newest = t
+            }
+            // first complete answer of a full read: compare with this phone and queue what the cloud lacks
+            val remote = if (full && fromServer && !reconciled) {
+                reconciled = true
+                snap.documents.associate { d -> d.id to RemoteMeta.of(d) }
+            } else null
+            if (changed.isEmpty() && remote == null) return@addSnapshotListener
             scope.launch(applyDispatcher) {
                 if (gen.get() != g) return@launch
-                runCatching { applyRemote(name, changed) }
-                    .onSuccess {
-                        clearErr(K_APPLY + name)
-                        _state.update { it.copy(lastSync = System.currentTimeMillis()) }
-                    }
-                    .onFailure { setErr(K_APPLY + name, "ذخیرهٔ «${fa(name)}» دریافتی ناموفق: " + explain(it)) }
+                try {
+                    if (changed.isNotEmpty()) applyRemote(name, changed)
+                    if (remote != null) reconcile(name, remote)
+                    clearErr(K_APPLY + name)
+                    val next = maxOf(newest, if (remote != null) serverNow else 0L)
+                    if (next > prefs.syncCursor(key)) prefs.setSyncCursor(key, next)
+                    if (fromServer) _state.update { it.copy(lastSync = System.currentTimeMillis()) }
+                } catch (e: Throwable) {
+                    if (e is CancellationException) throw e
+                    setErr(K_APPLY + name, "ذخیرهٔ «${fa(name)}» دریافتی ناموفق: " + explain(e))
+                }
             }
         }
     }
 
     private fun fa(name: String) = when (name) {
-        "products" -> "کالاها"; "moves" -> "حرکت انبار"; "docs" -> "اسناد انبار"; "sales" -> "فاکتورها"; "items" -> "اقلام فاکتور"
-        "expenses" -> "هزینه‌ها"; "customers" -> "مشتریان"; "payments" -> "دریافتی‌ها"; "recipes" -> "دستور ساخت"; else -> name
+        PRODUCTS -> "کالاها"; MOVES -> "حرکت انبار"; DOCS -> "اسناد انبار"; SALES -> "فاکتورها"; ITEMS -> "اقلام فاکتور"
+        EXPENSES -> "هزینه‌ها"; CUSTOMERS -> "مشتریان"; PAYMENTS -> "دریافتی‌ها"; RECIPES -> "دستور ساخت"; else -> name
     }
 
-    // ---------------------------------------------------------------- push
-    private fun col(name: String) = root()?.collection(name)
-
-    /** One Firestore write; a rejection (rules, quota, invalid data) is shown instead of being lost silently. */
-    private fun write(ref: DocumentReference, data: Map<String, Any?>) {
-        runCatching {
-            ref.set(data, SetOptions.merge()).addOnFailureListener { e ->
-                setErr(K_WRITE, "ارسال به ابر ناموفق (${fa(ref.parent.id)}): " + explain(e))
-            }
-        }.onFailure { setErr(K_WRITE, "ارسال به ابر ناموفق: " + explain(it)) }
-    }
-
-    /** Several writes that belong together (an invoice, its lines and its stock moves) go up atomically. */
-    private fun writeAll(list: List<Pair<DocumentReference, Map<String, Any?>>>) {
-        if (list.isEmpty()) return
-        runCatching {
-            val fs = FirebaseFirestore.getInstance()
-            list.chunked(400).forEach { chunk ->
-                val b = fs.batch()
-                chunk.forEach { (ref, data) -> b.set(ref, data, SetOptions.merge()) }
-                b.commit().addOnFailureListener { e -> setErr(K_WRITE, "ارسال به ابر ناموفق (${fa(chunk.first().first.parent.id)}): " + explain(e)) }
-            }
-        }.onFailure { setErr(K_WRITE, "ارسال به ابر ناموفق: " + explain(it)) }
-    }
-
-    fun push(p: Product) { if (active) col("products")?.document(p.id)?.let { write(it, p.toMap()) } }
-    fun push(m: StockMove) { if (active) col("moves")?.document(m.id)?.let { write(it, m.toMap()) } }
-    fun push(d: StockDoc) { if (active) col("docs")?.document(d.id)?.let { write(it, d.toMap()) } }
-    fun push(e: Expense) { if (active) col("expenses")?.document(e.id)?.let { write(it, e.toMap()) } }
-    fun push(c: Customer) { if (active) col("customers")?.document(c.id)?.let { write(it, c.toMap()) } }
-    fun push(r: RecipeItem) { if (active) col("recipes")?.document(r.id)?.let { write(it, r.toMap()) } }
-    fun push(p: CreditPayment) { if (active) col("payments")?.document(p.id)?.let { write(it, p.toMap()) } }
-
-    /** An invoice together with its lines and stock moves, in one atomic batch. */
-    fun push(s: Sale, items: List<SaleItem>, moves: List<StockMove> = emptyList()) {
-        if (!active) return
-        val r = root() ?: return
-        val list = ArrayList<Pair<DocumentReference, Map<String, Any?>>>()
-        list += r.collection("sales").document(s.id) to s.toMap()
-        items.forEach { list += r.collection("items").document(it.id) to it.toMap() }
-        moves.forEach { list += r.collection("moves").document(it.id) to it.toMap() }
-        writeAll(list)
-    }
-
-    /**
-     * Uploads every row the cloud does not have yet, or has in an OLDER version. Blindly re-uploading everything would let
-     * a phone with old data overwrite newer prices / edits made on another phone (last-writer-wins on updatedAt).
-     * Each collection is handled on its own: one failing collection no longer stops the others.
-     */
-    private suspend fun pushAllLocal(r: DocumentReference, g: Int, first: Map<String, CompletableDeferred<Map<String, RemoteMeta>>>) {
-        val fs = FirebaseFirestore.getInstance()
-        var failed = false
-        suspend fun <T> collect(name: String, local: List<T>, id: (T) -> String, ts: ((T) -> Long)?, flag: ((T) -> Boolean)?, map: (T) -> Map<String, Any?>) {
-            val remote = try {
-                first.getValue(name).await()
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                failed = true
-                setErr(K_PUSH, "ارسال «${fa(name)}» ناموفق: " + explain(e))
-                return
-            }
-            if (gen.get() != g) throw kotlinx.coroutines.CancellationException("stopped")
-            val writes = local.filter { x ->
-                SyncRules.shouldUpload(ts?.invoke(x), flag?.invoke(x) ?: false, remote[id(x)])
-            }.map { x -> r.collection(name).document(id(x)) to map(x) }
-            for (chunk in writes.chunked(400)) {
-                if (gen.get() != g) throw kotlinx.coroutines.CancellationException("stopped")
-                val b = fs.batch()
-                chunk.forEach { (ref, data) -> b.set(ref, data, SetOptions.merge()) }
-                try {
-                    b.commit().await()
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) throw e
-                    failed = true
-                    setErr(K_PUSH, "ارسال «${fa(name)}» ناموفق: " + explain(e))
-                }
-            }
+    /** Queues every local row that the cloud lacks, has in an older version, or does not know to be voided/deleted yet. */
+    private suspend fun reconcile(name: String, remote: Map<String, RemoteMeta>) {
+        fun <T> pick(list: List<T>, id: (T) -> String, ts: ((T) -> Long)?, flag: ((T) -> Boolean)?) =
+            list.filter { SyncRules.shouldUpload(ts?.invoke(it), flag?.invoke(it) ?: false, remote[id(it)]) }.map(id)
+        val ids = when (name) {
+            PRODUCTS -> pick(db.products().allRaw(), { it.id }, { it.updatedAt }, { it.deleted })
+            DOCS -> pick(db.stock().allDocs(), { it.id }, { it.updatedAt }, { it.voided })
+            SALES -> pick(db.sales().allSales(), { it.id }, { it.updatedAt }, { it.voided })
+            ITEMS -> pick(db.sales().allItems(), { it.id }, null, null)
+            MOVES -> pick(db.stock().all(), { it.id }, null, null)
+            EXPENSES -> pick(db.expenses().all(), { it.id }, { it.updatedAt }, { it.deleted })
+            CUSTOMERS -> pick(db.credit().allCustomers(), { it.id }, { it.updatedAt }, { it.deleted })
+            PAYMENTS -> pick(db.credit().allPayments(), { it.id }, { it.updatedAt }, { it.deleted })
+            RECIPES -> pick(db.recipes().all(), { it.id }, { it.updatedAt }, { it.deleted })
+            else -> emptyList()
         }
-        collect("products", db.products().allRaw(), { it.id }, { it.updatedAt }, { it.deleted }) { it.toMap() }
-        collect("docs", db.stock().allDocs(), { it.id }, { it.updatedAt }, { it.voided }) { it.toMap() }
-        collect("sales", db.sales().allSales(), { it.id }, { it.updatedAt }, { it.voided }) { it.toMap() }
-        collect("items", db.sales().allItems(), { it.id }, null, null) { it.toMap() }
-        collect("moves", db.stock().all(), { it.id }, null, null) { it.toMap() }
-        collect("expenses", db.expenses().all(), { it.id }, { it.updatedAt }, { it.deleted }) { it.toMap() }
-        collect("customers", db.credit().allCustomers(), { it.id }, { it.updatedAt }, { it.deleted }) { it.toMap() }
-        collect("payments", db.credit().allPayments(), { it.id }, { it.updatedAt }, { it.deleted }) { it.toMap() }
-        collect("recipes", db.recipes().all(), { it.id }, { it.updatedAt }, { it.deleted }) { it.toMap() }
-        if (!failed && gen.get() == g) {
-            clearErr(K_PUSH)
-            clearErr(K_WRITE) // everything this phone has is now in the cloud
-            _state.update { it.copy(lastSync = System.currentTimeMillis()) }
-        }
+        enqueue(name, ids)
     }
 
-    // ---------------------------------------------------------------- apply (remote -> local)
     private suspend fun applyRemote(name: String, docs: List<DocumentSnapshot>) {
         fun <T> parse(f: Map<String, Any?>.() -> T): List<T> = docs.mapNotNull { d -> runCatching { d.data?.f() }.getOrNull() }
         when (name) {
-            "products" -> applyProducts(parse { toProduct() })
-            "moves" -> parse { toMove() }.takeIf { it.isNotEmpty() }?.let { db.stock().insertAll(it) }
-            "docs" -> applyLww(parse { toDoc() }, { db.stock().doc(it) }, { it.id }, { it.updatedAt }, { it.voided },
-                { d, f, t -> d.copy(voided = f, updatedAt = t) }, { db.stock().insertDocs(it) }, { push(it) })
-            "sales" -> applyLww(parse { toSale() }, { db.sales().sale(it) }, { it.id }, { it.updatedAt }, { it.voided },
-                { s, f, t -> s.copy(voided = f, updatedAt = t) }, { l -> l.forEach { db.sales().insertSale(it) } }, { pushSaleHeader(it) })
-            "items" -> parse { toItem() }.takeIf { it.isNotEmpty() }?.let { db.sales().insertItems(it) }
-            "expenses" -> applyLww(parse { toExpense() }, { id -> db.expenses().byId(id) }, { it.id }, { it.updatedAt }, { it.deleted },
-                { e, f, t -> e.copy(deleted = f, updatedAt = t) }, { db.expenses().upsertAll(it) }, { push(it) })
-            "customers" -> applyLww(parse { toCustomer() }, { db.credit().customer(it) }, { it.id }, { it.updatedAt }, { it.deleted },
-                { c, f, t -> c.copy(deleted = f, updatedAt = t) }, { db.credit().upsertCustomers(it) }, { push(it) })
-            "payments" -> applyLww(parse { toPayment() }, { db.credit().payment(it) }, { it.id }, { it.updatedAt }, { it.deleted },
-                { p, f, t -> p.copy(deleted = f, updatedAt = t) }, { db.credit().upsertPayments(it) }, { push(it) })
-            "recipes" -> applyLww(parse { toRecipe() }, { db.recipes().item(it) }, { it.id }, { it.updatedAt }, { it.deleted },
-                { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.recipes().upsertAll(it) }, { push(it) })
+            PRODUCTS -> applyProducts(parse { toProduct() })
+            MOVES -> parse { toMove() }.takeIf { it.isNotEmpty() }?.let { db.stock().insertAll(it) }
+            DOCS -> applyLww(DOCS, parse { toDoc() }, { db.stock().doc(it) }, { it.id }, { it.updatedAt }, { it.voided },
+                { d, f, t -> d.copy(voided = f, updatedAt = t) }, { db.stock().insertDocs(it) })
+            SALES -> applyLww(SALES, parse { toSale() }, { db.sales().sale(it) }, { it.id }, { it.updatedAt }, { it.voided },
+                { s, f, t -> s.copy(voided = f, updatedAt = t) }, { l -> l.forEach { db.sales().insertSale(it) } })
+            ITEMS -> parse { toItem() }.takeIf { it.isNotEmpty() }?.let { db.sales().insertItems(it) }
+            EXPENSES -> applyLww(EXPENSES, parse { toExpense() }, { id -> db.expenses().byId(id) }, { it.id }, { it.updatedAt }, { it.deleted },
+                { e, f, t -> e.copy(deleted = f, updatedAt = t) }, { db.expenses().upsertAll(it) })
+            CUSTOMERS -> applyLww(CUSTOMERS, parse { toCustomer() }, { db.credit().customer(it) }, { it.id }, { it.updatedAt }, { it.deleted },
+                { c, f, t -> c.copy(deleted = f, updatedAt = t) }, { db.credit().upsertCustomers(it) })
+            PAYMENTS -> applyLww(PAYMENTS, parse { toPayment() }, { db.credit().payment(it) }, { it.id }, { it.updatedAt }, { it.deleted },
+                { p, f, t -> p.copy(deleted = f, updatedAt = t) }, { db.credit().upsertPayments(it) })
+            RECIPES -> applyLww(RECIPES, parse { toRecipe() }, { db.recipes().item(it) }, { it.id }, { it.updatedAt }, { it.deleted },
+                { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.recipes().upsertAll(it) })
         }
     }
 
-    private fun pushSaleHeader(s: Sale) { if (active) col("sales")?.document(s.id)?.let { write(it, s.toMap()) } }
-
     private suspend fun <T> applyLww(
-        incoming: List<T>, local: suspend (String) -> T?, id: (T) -> String, ts: (T) -> Long, flag: (T) -> Boolean,
-        withFlag: (T, Boolean, Long) -> T, store: suspend (List<T>) -> Unit, upload: (T) -> Unit,
+        coll: String, incoming: List<T>, local: suspend (String) -> T?, id: (T) -> String, ts: (T) -> Long, flag: (T) -> Boolean,
+        withFlag: (T, Boolean, Long) -> T, store: suspend (List<T>) -> Unit,
     ) {
         if (incoming.isEmpty()) return
-        val keep = ArrayList<T>()
-        val back = ArrayList<T>()
         db.withTransaction {
+            val keep = ArrayList<T>()
+            val back = ArrayList<String>()
             for (x in incoming) {
                 val m = SyncRules.merge(local(id(x)), x, ts, flag, withFlag)
                 m.store?.let { keep += it }
-                m.uploadBack?.let { back += it }
+                m.uploadBack?.let { back += id(it) }
             }
             if (keep.isNotEmpty()) store(keep)
+            // this phone knows the row is voided/deleted but the cloud does not yet
+            enqueue(coll, back)
         }
-        back.forEach(upload)
     }
 
     private suspend fun applyProducts(incoming: List<Product>) {
         if (incoming.isEmpty()) return
-        applyLww(incoming, { db.products().raw(it) }, { it.id }, { it.updatedAt }, { it.deleted },
-            { p, f, t -> p.copy(deleted = f, updatedAt = t) }, { db.products().upsertAll(it) }, { push(it) })
-        com.mozkhan.shop.data.LegacyUpgrade.ensureCodes(db).forEach { id -> db.products().raw(id)?.let { push(it) } }
+        applyLww(PRODUCTS, incoming, { db.products().raw(it) }, { it.id }, { it.updatedAt }, { it.deleted },
+            { p, f, t -> p.copy(deleted = f, updatedAt = t) }, { db.products().upsertAll(it) })
+        enqueue(PRODUCTS, com.mozkhan.shop.data.LegacyUpgrade.ensureCodes(db))
+    }
+
+    // ---------------------------------------------------------------- upload (outbox -> cloud)
+    /** Drains the outbox for as long as this start lives; wakes up whenever the outbox changes. */
+    private suspend fun upload(r: DocumentReference, g: Int) = coroutineScope {
+        val signal = Channel<Unit>(Channel.CONFLATED)
+        launch {
+            db.outbox().observeCount().collect { n ->
+                _state.update { it.copy(pending = n) }
+                if (n > 0) signal.trySend(Unit)
+            }
+        }
+        var wait = 3_000L
+        while (gen.get() == g) {
+            signal.receive()
+            while (gen.get() == g) {
+                val rows = db.outbox().next(BATCH)
+                if (rows.isEmpty()) {
+                    clearErr(K_WRITE)
+                    break
+                }
+                val ok = try {
+                    send(r, rows)
+                    true
+                } catch (e: Throwable) {
+                    if (e is CancellationException && e !is TimeoutCancellationException) throw e
+                    setErr(K_WRITE, "ارسال به ابر ناموفق (${fa(rows.first().coll)}): " + explain(e))
+                    false
+                }
+                if (ok) {
+                    db.outbox().remove(rows.map { it.seq })
+                    wait = 3_000L
+                    clearErr(K_WRITE)
+                    _state.update { it.copy(lastSync = System.currentTimeMillis()) }
+                } else {
+                    delay(wait)
+                    wait = minOf(wait * 2, 300_000L)
+                }
+            }
+        }
+    }
+
+    /** One atomic batch with the CURRENT local content of [rows] (an invoice, its lines and stock moves usually travel together). */
+    private suspend fun send(r: DocumentReference, rows: List<OutboxRow>) {
+        val b = FirebaseFirestore.getInstance().batch()
+        var n = 0
+        for ((coll, list) in rows.groupBy { it.coll }) {
+            val data = load(coll, list.map { it.docId })
+            for (row in list) {
+                val m = data[row.docId] ?: continue // no longer on this phone: nothing to send
+                b.set(r.collection(coll).document(row.docId), m + ("srv" to FieldValue.serverTimestamp()), SetOptions.merge())
+                n++
+            }
+        }
+        if (n == 0) return
+        val task = b.commit()
+        // Offline, Firestore keeps the batch in its own queue and sends it when the connection returns: wait for that
+        // same batch (instead of queueing it again and again). A rejection (rules, quota, invalid data) throws.
+        while (withTimeoutOrNull(60_000) { task.await(); true } == null) Unit
+    }
+
+    private suspend fun load(coll: String, ids: List<String>): Map<String, Map<String, Any?>> = when (coll) {
+        PRODUCTS -> db.products().rawIn(ids).associate { it.id to it.toMap() }
+        MOVES -> db.stock().movesIn(ids).associate { it.id to it.toMap() }
+        DOCS -> db.stock().docsIn(ids).associate { it.id to it.toMap() }
+        SALES -> db.sales().salesIn(ids).associate { it.id to it.toMap() }
+        ITEMS -> db.sales().itemsIn(ids).associate { it.id to it.toMap() }
+        EXPENSES -> db.expenses().byIds(ids).associate { it.id to it.toMap() }
+        CUSTOMERS -> db.credit().customersIn(ids).associate { it.id to it.toMap() }
+        PAYMENTS -> db.credit().paymentsIn(ids).associate { it.id to it.toMap() }
+        RECIPES -> db.recipes().itemsIn(ids).associate { it.id to it.toMap() }
+        else -> emptyMap()
+    }
+
+    companion object {
+        /** 4: documents carry `srv` (server write time) for incremental download; older apps must update */
+        const val SCHEMA = 4
+
+        const val PRODUCTS = "products"
+        const val MOVES = "moves"
+        const val DOCS = "docs"
+        const val SALES = "sales"
+        const val ITEMS = "items"
+        const val EXPENSES = "expenses"
+        const val CUSTOMERS = "customers"
+        const val PAYMENTS = "payments"
+        const val RECIPES = "recipes"
+
+        internal val COLLECTIONS = listOf(PRODUCTS, CUSTOMERS, SALES, ITEMS, MOVES, DOCS, EXPENSES, PAYMENTS, RECIPES)
+
+        /** documents per Firestore batch (the hard limit is 500) */
+        private const val BATCH = 400
+
+        /** an incremental listener re-reads this much before its cursor (cheap insurance against edge cases) */
+        private const val CURSOR_MARGIN_MS = 10 * 60_000L
+
+        // error keys: sorted, the first one is shown
+        private const val K_CONFIG = "0config"
+        private const val K_TEST = "0test"
+        private const val K_SIGNIN = "0signin"
+        private const val K_START = "1start"
+        private const val K_LISTEN = "2listen:"
+        private const val K_WRITE = "3write"
+        private const val K_APPLY = "5apply:"
+
+        /** Turns Firebase exceptions into a Persian message that says what to fix. */
+        fun explain(e: Throwable?): String {
+            val m = e?.message.orEmpty()
+            return when {
+                e is TimeoutCancellationException -> "پاسخی از سرور نیامد؛ اینترنت را بررسی کنید"
+                e is CancellationException -> "عملیات نیمه‌کاره ماند؛ دوباره امتحان کنید"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    "دسترسی رد شد: در Firebase بخش Firestore ← Rules را مطابق راهنما تنظیم و Publish کنید"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.RESOURCE_EXHAUSTED ->
+                    "سهمیهٔ روزانهٔ Firebase تمام شده است؛ فردا خودکار ادامه می‌یابد (یا در Firebase طرح Blaze را فعال کنید)"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAVAILABLE -> "سرور در دسترس نیست؛ اینترنت را بررسی کنید"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAUTHENTICATED ->
+                    "ورود به Firebase انجام نشده است؛ «آزمایش اتصال» را بزنید"
+                e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.INVALID_ARGUMENT -> "سرور دادهٔ ارسالی را نپذیرفت: $m"
+                e is FirebaseFirestoreException && (e.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION || e.code == FirebaseFirestoreException.Code.NOT_FOUND) ->
+                    "Firestore Database هنوز ساخته نشده است (Firebase ← Build ← Firestore Database ← Create database)"
+                m.contains("OPERATION_NOT_ALLOWED", true) || m.contains("sign-in provider is disabled", true) || m.contains("admin-restricted", true) ->
+                    "ورود ناشناس فعال نیست: Firebase ← Authentication ← Sign-in method ← Anonymous را Enable کنید"
+                m.contains("API key", true) && (m.contains("not valid", true) || m.contains("invalid", true)) -> "API key اشتباه است"
+                m.contains("CONFIGURATION_NOT_FOUND", true) -> "Authentication در پروژهٔ Firebase راه‌اندازی نشده (Get started را بزنید)"
+                m.contains("network", true) || m.contains("Unable to resolve host", true) -> "اینترنت برقرار نیست"
+                else -> m.ifBlank { e?.javaClass?.simpleName ?: "خطای ناشناخته" }
+            }
+        }
     }
 }
 

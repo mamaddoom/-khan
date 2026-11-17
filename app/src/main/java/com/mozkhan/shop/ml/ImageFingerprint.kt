@@ -124,14 +124,15 @@ object ImageFingerprint {
 
     /** Best candidates (score desc). [prints] maps product id -> its stored fingerprints. */
     fun match(frame: Bitmap, products: List<ProductWithStock>, prints: Map<String, String>, limit: Int = 3): List<Match> {
-        val emb = embed(frame)
+        // two views of the live frame: as enrolled (80% centre) and closer in (55%), for packs held farther from the lens
+        val embs = listOfNotNull(embed(frame), embed(frame, 0.55f))
         var color: FloatArray? = null
         val out = ArrayList<Match>()
         for (p in products) {
             val vs = vectors(p.id, prints[p.id] ?: continue)
-            if (emb != null) {
+            if (embs.isNotEmpty()) {
                 var best = -1f
-                for (v in vs) if (v is Vec.Emb) best = max(best, dot(emb, v.data))
+                for (v in vs) if (v is Vec.Emb) for (e in embs) best = max(best, dot(e, v.data))
                 if (best >= showScore) { out.add(Match(p, best)); continue }
                 if (vs.none { it is Vec.Emb }) {
                     if (color == null) color = colorDescriptor(frame)
@@ -166,10 +167,10 @@ object ImageFingerprint {
     }
 
     @Synchronized
-    private fun embed(src: Bitmap): FloatArray? {
+    private fun embed(src: Bitmap, frac: Float = 0.8f): FloatArray? {
         val e = embedder ?: return null
         return runCatching {
-            val crop = centerCrop(src, 0.8f)
+            val crop = centerCrop(src, frac)
             val res = e.embed(BitmapImageBuilder(crop).build())
             if (crop !== src) crop.recycle()
             normalize(res.embeddingResult().embeddings()[0].floatEmbedding().copyOf())

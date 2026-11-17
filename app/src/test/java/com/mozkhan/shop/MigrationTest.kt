@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.mozkhan.shop.data.AppDb
 import com.mozkhan.shop.data.MIGRATION_2_3
 import com.mozkhan.shop.data.MIGRATION_3_4
+import com.mozkhan.shop.data.MIGRATION_4_5
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -94,9 +95,33 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate4To5_addsEmptyOutboxAndKeepsData() {
+        val db = helper.createDatabase("mig45.db", 4)
+        db.execSQL("INSERT INTO sales (id,ts,subtotal,discount,total,cost,payment,note,voided,updatedAt,customerId,deviceName) VALUES ('s1',20,300000,0,300000,270000,'CASH','',0,20,NULL,'a')")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig45.db", 5, true, MIGRATION_4_5)
+        m.query("SELECT COUNT(*) FROM sales").use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+        m.query("SELECT COUNT(*) FROM outbox").use { c -> c.moveToFirst(); assertEquals(0, c.getInt(0)) }
+        // re-marking the same document replaces its entry (unique index) and gets a newer seq
+        m.execSQL("INSERT OR REPLACE INTO outbox (coll,docId) VALUES ('sales','s1')")
+        m.execSQL("INSERT OR REPLACE INTO outbox (coll,docId) VALUES ('sales','s1')")
+        m.query("SELECT COUNT(*), MAX(seq) FROM outbox").use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)); assertEquals(2, c.getInt(1)) }
+    }
+
+    @Test
+    fun migrate2To5_fullChain() {
+        val db = helper.createDatabase("mig25.db", 2)
+        db.execSQL("INSERT INTO sales (id,ts,subtotal,discount,total,cost,payment,note,voided,updatedAt,customerId) VALUES ('s1',20,300000,0,300000,270000,'CASH','',0,20,NULL)")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig25.db", 5, true, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        m.query("SELECT deviceName FROM sales WHERE id='s1'").use { c -> c.moveToFirst(); assertEquals("", c.getString(0)) }
+        m.query("SELECT COUNT(*) FROM outbox").use { c -> c.moveToFirst(); assertEquals(0, c.getInt(0)) }
+    }
+
+    @Test
     fun versionConstantMatchesDatabase() {
         // AppDb.VERSION drives the pre-migration safety copy: it must follow the @Database version
-        assertEquals(4, AppDb.VERSION)
+        assertEquals(5, AppDb.VERSION)
     }
 
     @Test

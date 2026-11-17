@@ -2,6 +2,15 @@ package com.mozkhan.shop.data
 
 import androidx.room.withTransaction
 import com.mozkhan.shop.sync.CloudSync
+import com.mozkhan.shop.sync.CloudSync.Companion.CUSTOMERS
+import com.mozkhan.shop.sync.CloudSync.Companion.DOCS
+import com.mozkhan.shop.sync.CloudSync.Companion.EXPENSES
+import com.mozkhan.shop.sync.CloudSync.Companion.ITEMS
+import com.mozkhan.shop.sync.CloudSync.Companion.MOVES
+import com.mozkhan.shop.sync.CloudSync.Companion.PAYMENTS
+import com.mozkhan.shop.sync.CloudSync.Companion.PRODUCTS
+import com.mozkhan.shop.sync.CloudSync.Companion.RECIPES
+import com.mozkhan.shop.sync.CloudSync.Companion.SALES
 import com.mozkhan.shop.util.Fmt
 import com.mozkhan.shop.util.Prefs
 import kotlinx.coroutines.Dispatchers
@@ -136,7 +145,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
     }
 
     suspend fun ensureCodes() {
-        LegacyUpgrade.ensureCodes(db).forEach { id -> db.products().raw(id)?.let { sync.push(it) } }
+        db.withTransaction { sync.enqueue(PRODUCTS, LegacyUpgrade.ensureCodes(db)) }
     }
 
     /**
@@ -168,29 +177,35 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
                 }
                 db.stock().insert(move!!)
             }
+            sync.enqueue(PRODUCTS, saved.id)
+            doc?.let { sync.enqueue(DOCS, it.id) }
+            move?.let { sync.enqueue(MOVES, it.id) }
         }
-        doc?.let { sync.push(it) }
-        move?.let { sync.push(it) }
-        sync.push(saved)
         return saved
     }
 
     suspend fun deleteProduct(id: String) {
-        db.products().softDelete(id, System.currentTimeMillis())
-        db.products().raw(id)?.let { sync.push(it) }
+        db.withTransaction {
+            db.products().softDelete(id, System.currentTimeMillis())
+            sync.enqueue(PRODUCTS, id)
+        }
     }
 
     suspend fun toggleFavorite(id: String, fav: Boolean) {
-        db.products().setFavorite(id, fav, System.currentTimeMillis())
-        db.products().raw(id)?.let { sync.push(it) }
+        db.withTransaction {
+            db.products().setFavorite(id, fav, System.currentTimeMillis())
+            sync.enqueue(PRODUCTS, id)
+        }
     }
 
     suspend fun adjustStock(productId: String, delta: Double, reason: String) {
         if (delta == 0.0) return
         val p = db.products().raw(productId)
         val m = StockMove(newId(), productId, delta, reason, unitCost = p?.let { if (it.unit == Measure.PIECE) it.buyPrice.toDouble() else it.buyPrice / 1000.0 } ?: 0.0)
-        db.stock().insert(m)
-        sync.push(m)
+        db.withTransaction {
+            db.stock().insert(m)
+            sync.enqueue(MOVES, m.id)
+        }
     }
 
     /**
@@ -218,8 +233,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
             db.products().upsert(updated)
             db.stock().insertDoc(doc)
             db.stock().insert(move)
+            sync.enqueue(PRODUCTS, updated.id); sync.enqueue(DOCS, doc.id); sync.enqueue(MOVES, move.id)
         }
-        sync.push(updated); sync.push(doc); sync.push(move)
         return doc
     }
 
@@ -232,8 +247,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         db.withTransaction {
             db.stock().voidDoc(docId, now)
             db.stock().insertAll(rev)
+            sync.enqueue(DOCS, docId); sync.enqueue(MOVES, rev.map { it.id })
         }
-        sync.push(d.copy(voided = true, updatedAt = now)); rev.forEach { sync.push(it) }
     }
 
     // ------------------------------------------------------------ cafe recipes
@@ -245,9 +260,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         db.withTransaction {
             db.recipes().clearFor(drinkId, now)
             db.recipes().upsertAll(fresh)
+            sync.enqueue(RECIPES, old.map { it.id } + fresh.map { it.id })
         }
-        old.forEach { sync.push(it.copy(deleted = true, updatedAt = now)) }
-        fresh.forEach { sync.push(it) }
     }
 
     suspend fun recipeOf(drinkId: String) = db.recipes().linesFor(drinkId)
@@ -301,9 +315,9 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
             db.sales().insertSale(sale)
             db.sales().insertItems(items)
             db.stock().insertAll(moves)
+            // queued together (consecutive outbox entries -> one atomic upload batch): the other phone never sees half an invoice
+            sync.enqueue(SALES, sale.id); sync.enqueue(ITEMS, items.map { it.id }); sync.enqueue(MOVES, moves.map { it.id })
         }
-        // invoice, lines and stock moves go up together (one atomic batch): the other phone never sees half an invoice
-        sync.push(sale, items, moves)
         return sale
     }
 
@@ -318,8 +332,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         db.withTransaction {
             db.sales().markVoided(id, now)
             db.stock().insertAll(moves)
+            sync.enqueue(SALES, id); sync.enqueue(MOVES, moves.map { it.id })
         }
-        sync.push(s.copy(voided = true, updatedAt = now), emptyList(), moves)
     }
 
     suspend fun itemsOf(saleId: String) = db.sales().itemsOf(saleId)
@@ -347,9 +361,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         db.withTransaction {
             db.stock().insertDoc(doc)
             db.stock().insertAll(moves)
+            sync.enqueue(DOCS, doc.id); sync.enqueue(MOVES, moves.map { it.id })
         }
-        sync.push(doc)
-        moves.forEach { sync.push(it) }
         return doc
     }
 
@@ -362,14 +375,12 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
 
     suspend fun addExpense(title: String, amount: Long) {
         val e = Expense(newId(), title.trim(), amount)
-        db.expenses().upsert(e)
-        sync.push(e)
+        db.withTransaction { db.expenses().upsert(e); sync.enqueue(EXPENSES, e.id) }
     }
 
     suspend fun deleteExpense(e: Expense) {
         val ts = System.currentTimeMillis()
-        db.expenses().softDelete(e.id, ts)
-        sync.push(e.copy(deleted = true, updatedAt = ts))
+        db.withTransaction { db.expenses().softDelete(e.id, ts); sync.enqueue(EXPENSES, e.id) }
     }
 
     // ------------------------------------------------------------ credit (نسیه)
@@ -381,26 +392,22 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
 
     suspend fun addCustomer(name: String, phone: String = ""): Customer {
         val c = Customer(newId(), name.trim(), phone.trim())
-        db.credit().upsertCustomer(c)
-        sync.push(c)
+        db.withTransaction { db.credit().upsertCustomer(c); sync.enqueue(CUSTOMERS, c.id) }
         return c
     }
 
     suspend fun deleteCustomer(c: Customer) {
         val d = c.copy(deleted = true, updatedAt = System.currentTimeMillis())
-        db.credit().upsertCustomer(d)
-        sync.push(d)
+        db.withTransaction { db.credit().upsertCustomer(d); sync.enqueue(CUSTOMERS, d.id) }
     }
 
     suspend fun addPayment(customerId: String, amount: Long, note: String = "") {
         val p = CreditPayment(newId(), customerId, amount, note = note.trim())
-        db.credit().upsertPayment(p)
-        sync.push(p)
+        db.withTransaction { db.credit().upsertPayment(p); sync.enqueue(PAYMENTS, p.id) }
     }
 
     suspend fun deletePayment(id: String) {
-        db.credit().softDeletePayment(id, System.currentTimeMillis())
-        db.credit().payment(id)?.let { sync.push(it) }
+        db.withTransaction { db.credit().softDeletePayment(id, System.currentTimeMillis()); sync.enqueue(PAYMENTS, id) }
     }
 
     // ------------------------------------------------------------ backup (JSON, versioned, tolerant)
@@ -504,8 +511,8 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         }
         // old files have no codes / kinds: repair, then re-upload what changed
         ensureCodes()
-        // restored rows exist only on this phone: upload what the cloud lacks (no-op while sync is off)
-        sync.syncNow()
+        // restored rows exist only on this phone: read the cloud once in full and upload what it lacks (no-op while sync is off)
+        sync.fullResync()
     }
 
     companion object { const val BACKUP_VERSION = 3 }

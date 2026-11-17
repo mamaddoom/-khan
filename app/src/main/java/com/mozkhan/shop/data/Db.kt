@@ -43,6 +43,9 @@ interface ProductDao {
     @Query("SELECT * FROM products WHERE id = :id")
     suspend fun raw(id: String): Product?
 
+    @Query("SELECT * FROM products WHERE id IN (:ids)")
+    suspend fun rawIn(ids: List<String>): List<Product>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(p: Product)
 
@@ -78,6 +81,12 @@ interface StockDao {
 
     @Query("SELECT * FROM stock_moves")
     suspend fun all(): List<StockMove>
+
+    @Query("SELECT * FROM stock_moves WHERE id IN (:ids)")
+    suspend fun movesIn(ids: List<String>): List<StockMove>
+
+    @Query("SELECT * FROM stock_docs WHERE id IN (:ids)")
+    suspend fun docsIn(ids: List<String>): List<StockDoc>
 
     @Query("SELECT * FROM stock_moves WHERE ts BETWEEN :from AND :to")
     fun observeInRange(from: Long, to: Long): Flow<List<StockMove>>
@@ -139,6 +148,8 @@ interface SaleDao {
 
     @Query("SELECT * FROM sales") suspend fun allSales(): List<Sale>
     @Query("SELECT * FROM sale_items") suspend fun allItems(): List<SaleItem>
+    @Query("SELECT * FROM sales WHERE id IN (:ids)") suspend fun salesIn(ids: List<String>): List<Sale>
+    @Query("SELECT * FROM sale_items WHERE id IN (:ids)") suspend fun itemsIn(ids: List<String>): List<SaleItem>
 
     @Query(
         """SELECT COUNT(*) AS count, COALESCE(SUM(total),0) AS revenue, COALESCE(SUM(cost),0) AS cost
@@ -187,6 +198,7 @@ interface ExpenseDao {
 
     @Query("SELECT * FROM expenses") suspend fun all(): List<Expense>
     @Query("SELECT * FROM expenses WHERE id = :id") suspend fun byId(id: String): Expense?
+    @Query("SELECT * FROM expenses WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<Expense>
 }
 
 @Dao
@@ -196,6 +208,7 @@ interface CreditDao {
     @Query("SELECT * FROM customers WHERE deleted = 0 ORDER BY name COLLATE NOCASE") fun observeCustomers(): Flow<List<Customer>>
     @Query("SELECT * FROM customers") suspend fun allCustomers(): List<Customer>
     @Query("SELECT * FROM customers WHERE id = :id") suspend fun customer(id: String): Customer?
+    @Query("SELECT * FROM customers WHERE id IN (:ids)") suspend fun customersIn(ids: List<String>): List<Customer>
 
     @Query(
         """SELECT customerId AS customerId, COALESCE(SUM(total),0) AS credit, MAX(ts) AS last FROM sales
@@ -217,6 +230,7 @@ interface CreditDao {
     @Query("SELECT * FROM credit_payments WHERE customerId = :id AND deleted = 0 ORDER BY ts DESC") fun observePayments(id: String): Flow<List<CreditPayment>>
     @Query("SELECT * FROM credit_payments") suspend fun allPayments(): List<CreditPayment>
     @Query("SELECT * FROM credit_payments WHERE id = :id") suspend fun payment(id: String): CreditPayment?
+    @Query("SELECT * FROM credit_payments WHERE id IN (:ids)") suspend fun paymentsIn(ids: List<String>): List<CreditPayment>
     @Query("UPDATE credit_payments SET deleted = 1, updatedAt = :ts WHERE id = :id") suspend fun softDeletePayment(id: String, ts: Long)
 }
 
@@ -227,7 +241,18 @@ interface RecipeDao {
     @Query("SELECT * FROM recipe_items WHERE drinkId = :id AND deleted = 0") suspend fun linesFor(id: String): List<RecipeItem>
     @Query("SELECT * FROM recipe_items") suspend fun all(): List<RecipeItem>
     @Query("SELECT * FROM recipe_items WHERE id = :id") suspend fun item(id: String): RecipeItem?
+    @Query("SELECT * FROM recipe_items WHERE id IN (:ids)") suspend fun itemsIn(ids: List<String>): List<RecipeItem>
     @Query("UPDATE recipe_items SET deleted = 1, updatedAt = :ts WHERE drinkId = :id AND deleted = 0") suspend fun clearFor(id: String, ts: Long)
+}
+
+@Dao
+interface OutboxDao {
+    /** REPLACE on the (coll, docId) unique index: a re-marked document gets a new seq (see [OutboxRow]) */
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun add(rows: List<OutboxRow>)
+    @Query("SELECT * FROM outbox ORDER BY seq LIMIT :n") suspend fun next(n: Int): List<OutboxRow>
+    @Query("DELETE FROM outbox WHERE seq IN (:seqs)") suspend fun remove(seqs: List<Long>)
+    @Query("SELECT COUNT(*) FROM outbox") fun observeCount(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM outbox") suspend fun count(): Int
 }
 
 private fun SupportSQLiteDatabase.hasColumn(table: String, col: String): Boolean =
@@ -282,9 +307,9 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
 @Database(
     entities = [
         Product::class, StockMove::class, StockDoc::class, Sale::class, SaleItem::class,
-        Expense::class, Customer::class, CreditPayment::class, RecipeItem::class,
+        Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -295,15 +320,16 @@ abstract class AppDb : RoomDatabase() {
     abstract fun expenses(): ExpenseDao
     abstract fun credit(): CreditDao
     abstract fun recipes(): RecipeDao
+    abstract fun outbox(): OutboxDao
 
     companion object {
         /** must always equal the @Database version above (drives the pre-migration backup copy in ShopApp) */
-        const val VERSION = 4
+        const val VERSION = 5
 
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx, AppDb::class.java, "shop.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 // Only the throw-away v1 test database may ever be dropped. Never allow this for v2 or later.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
@@ -314,5 +340,15 @@ abstract class AppDb : RoomDatabase() {
 val MIGRATION_3_4 = object : Migration(3, 4) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.addColumn("sales", "deviceName", "TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+/** v4 -> v5: durable upload queue for cloud sync (see [OutboxRow]) */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `outbox` (`seq` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `coll` TEXT NOT NULL, `docId` TEXT NOT NULL)",
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_outbox_coll_docId` ON `outbox` (`coll`, `docId`)")
     }
 }
