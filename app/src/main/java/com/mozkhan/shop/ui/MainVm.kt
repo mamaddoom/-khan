@@ -309,6 +309,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     }
 
     fun voidPurchase(docId: String) = launch { repo.voidPurchase(docId) }
+    fun voidExit(docId: String) = launch { repo.voidExit(docId) }
 
     fun saveDrink(p: Product, lines: List<Pair<String, Double>>, onDone: () -> Unit = {}) = launch {
         repo.saveProduct(p)
@@ -419,7 +420,8 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             val cost = Math.round(m.qty * (if (est) p.baseCost else m.unitCost))
             PurchaseRow(m.refId ?: m.id, m.ts, p.name, m.qty, p.unit, cost, docMap[m.refId]?.note.orEmpty(), est)
         }.sortedByDescending { it.ts }
-        val exit = docs.filter { it.kind != "PURCHASE" && !it.voided && it.ts in pr.r.from..pr.r.to }.sumOf { it.cost }
+        // only exits marked "count the value" lower the profit; others just move goods
+        val exit = docs.filter { it.kind != "PURCHASE" && !it.voided && it.counted && it.ts in pr.r.from..pr.r.to }.sumOf { it.cost }
         Extras(rows.sumOf { it.cost }, estimated, rows, exit, paid)
     }
 
@@ -453,6 +455,8 @@ class MainVm(app: Application) : AndroidViewModel(app) {
                 m.reason == "RETURN" -> { sold -= v; outs[i] -= v }
                 // the reversal of a voided purchase (ADJUST pointing at the purchase document) cancels that purchase
                 m.reason == "ADJUST" && m.refId != null && m.qty < 0 -> { purchased -= v; ins[i] -= v }
+                // the goods of a voided exit document come back: they cancel that exit
+                m.reason == "EXIT" && m.qty > 0 -> { exited -= v; outs[i] -= v }
                 m.qty > 0 -> { ins[i] += v; if (m.reason == "PURCHASE") purchased += v }
                 else -> {
                     outs[i] += v
@@ -471,7 +475,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         return InvData(
             stockValue = tracked.sumOf { it.stockValue }, sellValue = tracked.sumOf { it.stockSellValue },
             productCount = tracked.size, lowCount = tracked.count { it.low }, outCount = tracked.count { it.stock <= 0 },
-            purchased = Math.round(purchased.coerceAtLeast(0.0)), soldOut = Math.round(sold.coerceAtLeast(0.0)), exited = Math.round(exited),
+            purchased = Math.round(purchased.coerceAtLeast(0.0)), soldOut = Math.round(sold.coerceAtLeast(0.0)), exited = Math.round(exited.coerceAtLeast(0.0)),
             labels = b.labels, inSeries = ins.map { Math.round(it.coerceAtLeast(0.0)) }, outSeries = outs.map { Math.round(it.coerceAtLeast(0.0)) },
             byCat = tracked.groupBy { it.category }.map { (c, l) -> c to l.sumOf { it.stockValue } }.sortedByDescending { it.second },
             low = lowList, reorder = reorder,
@@ -483,8 +487,8 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------ stock exit documents
     val docs: StateFlow<List<StockDoc>> = repo.docs.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun createExit(kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, onDone: () -> Unit) = launch {
-        repo.createExit(kind, note, lines); fb.success(); onDone()
+    fun createExit(kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, counted: Boolean, onDone: () -> Unit) = launch {
+        repo.createExit(kind, note, lines, counted); fb.success(); onDone()
     }
 
     // ------------------------------------------------------------------ credit
