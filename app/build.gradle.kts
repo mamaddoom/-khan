@@ -10,7 +10,7 @@ if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
 
-val appVersionName = "1.6"
+val appVersionName = "1.7"
 
 // installable files are named MozKhan-<version>-debug.apk / MozKhan-<version>-release.apk
 base { archivesName.set("MozKhan-$appVersionName") }
@@ -102,6 +102,8 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
     implementation(libs.firebase.firestore)
+    // same gRPC version Firestore brings along: the in-app DNS plugs into its name resolution (net/InAppDns.kt)
+    implementation("io.grpc:grpc-api:1.62.2")
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play)
     implementation(libs.googleid)

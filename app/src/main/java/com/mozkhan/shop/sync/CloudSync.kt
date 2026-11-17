@@ -676,7 +676,9 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
                 e is TimeoutCancellationException -> "پاسخی از سرور نیامد؛ اینترنت را بررسی کنید"
                 e is CancellationException -> "عملیات نیمه‌کاره ماند؛ دوباره امتحان کنید"
                 e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED ->
-                    "دسترسی رد شد: در Firebase بخش Firestore ← Rules را مطابق راهنما تنظیم و Publish کنید"
+                    // HTTP 403 from a relay looks exactly like a rules rejection to gRPC
+                    "دسترسی رد شد (403). اگر DNS ضدتحریم (شکن، بگذر، ۴۰۳، الکترو…) انتخاب کرده‌اید، آن DNS از Firebase پشتیبانی نمی‌کند: " +
+                        "در تنظیمات ← DNS گزینهٔ Google یا «خودکار» را بگذارید. در غیر این صورت Firestore ← Rules را مطابق راهنما Publish کنید"
                 e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.RESOURCE_EXHAUSTED ->
                     "سهمیهٔ روزانهٔ Firebase تمام شده است؛ فردا خودکار ادامه می‌یابد (یا در Firebase طرح Blaze را فعال کنید)"
                 e is FirebaseFirestoreException && e.code == FirebaseFirestoreException.Code.UNAVAILABLE -> "سرور در دسترس نیست؛ اینترنت را بررسی کنید"
