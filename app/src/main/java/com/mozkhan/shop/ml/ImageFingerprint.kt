@@ -38,7 +38,7 @@ object ImageFingerprint {
     @Volatile private var initState = 0 // 0 not tried, 1 loading, 2 ready, 3 failed
         set(v) { field = v; _changes.value = _changes.value + 1 }
 
-    /** Strictness 0 (lenient) .. 2 (strict); set from Settings. */
+    /** Strictness: 3 very lenient, 0 lenient, 1 normal, 2 strict; set from Settings. */
     @Volatile var level: Int = 1
 
     val modelReady: Boolean get() = embedder != null
@@ -109,9 +109,12 @@ object ImageFingerprint {
     }
 
     // ------------------------------------------------------------------ thresholds (need field calibration)
-    val showScore: Float get() = if (embedder != null) listOf(0.62f, 0.66f, 0.70f)[level.coerceIn(0, 2)] else 0.80f
-    val sureScore: Float get() = if (embedder != null) listOf(0.80f, 0.84f, 0.88f)[level.coerceIn(0, 2)] else 0.93f
-    val margin: Float get() = listOf(0.04f, 0.05f, 0.07f)[level.coerceIn(0, 2)]
+    // level: 3 = very lenient, 0 = lenient, 1 = normal, 2 = strict (stored values kept for older installs)
+    val showScore: Float get() = if (embedder != null) when (level) { 3 -> 0.55f; 0 -> 0.62f; 2 -> 0.70f; else -> 0.66f } else 0.80f
+    val sureScore: Float get() = if (embedder != null) when (level) { 3 -> 0.74f; 0 -> 0.80f; 2 -> 0.88f; else -> 0.84f } else 0.93f
+    val margin: Float get() = when (level) { 3 -> 0.03f; 0 -> 0.04f; 2 -> 0.07f; else -> 0.05f }
+    /** frames in a row the same product must win before the confirm sheet opens by itself */
+    val sureFrames: Int get() = if (level == 3) 1 else 2
     private const val LEGACY_SHOW = 0.80f
 
     // ------------------------------------------------------------------ public API

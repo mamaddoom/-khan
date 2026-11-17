@@ -173,6 +173,27 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                                 .background(Color.Black.copy(alpha = 0.45f), CircleShape).padding(horizontal = 12.dp, vertical = 4.dp),
                         )
                     }
+                    // image suggestions sit right under the camera (not inside the scrolling list, where they could be
+                    // scrolled out of sight behind the camera)
+                    if (visual.isNotEmpty() && pending == null) {
+                        Column(
+                            Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.primaryContainer).padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text("آیا این کالا است؟", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 4.dp))
+                            visual.forEach { m ->
+                                Row(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
+                                        .clickableRow { vm.pick(m.product, viaImage = true) }.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(m.product.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Pill(Fmt.digits("${(m.score * 100).toInt()}٪"), MaterialTheme.extra.profit)
+                                }
+                            }
+                        }
+                    }
                 } else {
                     Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -193,23 +214,6 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (tab == 0) {
-                    if (visual.isNotEmpty() && pending == null) item(key = "visual") {
-                        AppCard(container = MaterialTheme.colorScheme.primaryContainer) {
-                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("آیا این کالا است؟", style = MaterialTheme.typography.titleSmall)
-                                visual.forEach { m ->
-                                    Row(
-                                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface)
-                                            .clickableRow { vm.pick(m.product, viaImage = true) }.padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Text(m.product.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Pill(Fmt.digits("${(m.score * 100).toInt()}٪"), MaterialTheme.extra.profit)
-                                    }
-                                }
-                            }
-                        }
-                    }
                     if (visualOn && !hasPrints && cameraOn) item(key = "novis") {
                         Text(
                             "برای شناسایی کالاهای بدون بارکد با دوربین، هنگام تعریف کالا «عکس مرجع» بگیرید.",

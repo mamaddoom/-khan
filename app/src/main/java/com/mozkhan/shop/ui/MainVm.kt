@@ -268,7 +268,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             (second == null || second.legacy || top.score - second.score >= ImageFingerprint.margin)
         if (sure) {
             if (candidateId == top.product.id) candidateHits++ else { candidateId = top.product.id; candidateHits = 1 }
-            if (candidateHits >= 2) {
+            if (candidateHits >= ImageFingerprint.sureFrames) {
                 candidateId = null; candidateHits = 0
                 fb.success()
                 pick(top.product, viaImage = true)
