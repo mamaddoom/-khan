@@ -208,12 +208,14 @@ fun AppRoot(vm: MainVm, activity: Activity) {
                 ProductsScreen(vm, onEdit = { id -> if (salesOnly) deny() else nav.navigate(editRoute(id = id)) }, onNew = { if (salesOnly) deny() else nav.navigate(editRoute()) }, canManage = !salesOnly)
             }
             composable("reports") { ReportsScreen(vm) }
-            composable("more") { MoreScreen(vm, onGo = { r -> if (salesOnly && (r == "cafe" || r == "exits")) deny() else nav.navigate(r) { launchSingleTop = true } }) }
+            composable("more") { MoreScreen(vm, onGo = { r -> if (salesOnly && (r == "cafe" || r == "exits" || r == "cheques" || r == "buy")) deny() else nav.navigate(r) { launchSingleTop = true } }) }
             composable("settings") { SettingsScreen(vm, activity, onBack = { nav.popBackStack() }) }
             composable("credit") { CreditScreen(vm, onBack = { nav.popBackStack() }) }
             composable("inventory") { InventoryScreen(vm, onBack = { nav.popBackStack() }, onEdit = { if (salesOnly) deny() else nav.navigate(editRoute(id = it)) }) }
             composable("exits") { ExitScreen(vm, onBack = { nav.popBackStack() }) }
             composable("cafe") { CafeScreen(vm, onBack = { nav.popBackStack() }) }
+            composable("cheques") { ChequesScreen(vm, onBack = { nav.popBackStack() }) }
+            composable("buy") { BuyAdviceScreen(vm, onBack = { nav.popBackStack() }, onBuy = { pid -> nav.navigate(editRoute(id = pid, mode = "restock")) }) }
             composable(
                 "edit?id={id}&barcode={barcode}&preset={preset}&mode={mode}",
                 arguments = listOf(

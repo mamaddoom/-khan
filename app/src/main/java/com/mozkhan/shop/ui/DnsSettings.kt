@@ -35,6 +35,9 @@ import com.mozkhan.shop.net.DnsClient
 import com.mozkhan.shop.net.DnsControl
 import com.mozkhan.shop.net.DnsPresets
 import com.mozkhan.shop.net.DnsVpnService
+import com.mozkhan.shop.net.InAppDns
+import androidx.compose.material3.Switch
+import androidx.compose.ui.Alignment
 import com.mozkhan.shop.util.Fmt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -54,29 +57,30 @@ fun DnsSettings(vm: MainVm) {
     var m2 by remember { mutableStateOf(prefs.dnsManual2) }
     var msg by remember { mutableStateOf<String?>(null) }
 
+    val vpnMode by prefs.dnsVpn.collectAsState()
+
     fun applyNow() {
-        if (prefs.dnsServers().isEmpty()) {
-            DnsControl.stop(ctx)
-            msg = "DNS پیش‌فرض گوشی استفاده می‌شود"
-        } else {
-            DnsControl.start(ctx)
-            msg = null
-        }
-        // reconnect so Firebase looks its servers up again through the new DNS
+        if (prefs.dnsServers().isEmpty() || !prefs.dnsVpn.value) DnsControl.stop(ctx) else DnsControl.start(ctx)
+        msg = if (prefs.dnsServers().isEmpty()) "DNS خود گوشی استفاده می‌شود" else null
+        // Firestore looks its server up again through the new DNS and reconnects
+        InAppDns.refreshAll()
         scope.launch { delay(1500); vm.sync.syncNow() }
     }
 
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) applyNow()
-        else msg = "بدون اجازهٔ VPN نمی‌توان DNS برنامه را عوض کرد"
+        else { prefs.setDnsVpn(false); applyNow(); msg = "اجازهٔ VPN داده نشد؛ DNS داخلی برنامه (بدون VPN) فعال است" }
+    }
+
+    fun applyWithPermission() {
+        val ask = if (prefs.dnsVpn.value && prefs.dnsServers().isNotEmpty()) DnsControl.permissionIntent(ctx) else null
+        if (ask != null) permission.launch(ask) else applyNow()
     }
 
     fun choose(id: String) {
         prefs.setDnsPreset(id)
         menu = false
-        if (prefs.dnsServers().isEmpty()) { applyNow(); return }
-        val ask = DnsControl.permissionIntent(ctx)
-        if (ask != null) permission.launch(ask) else applyNow()
+        applyWithPermission()
     }
 
     val label = when (preset) {
@@ -133,10 +137,26 @@ fun DnsSettings(vm: MainVm) {
             ) { Text("ذخیره و اعمال DNS دستی") }
         }
 
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("حالت کامل با VPN داخلی")
+                Text(
+                    "خاموش (پیشنهادی): بدون VPN، فقط اتصال همگام‌سازی از این DNS استفاده می‌کند و فیلترشکن شما قطع نمی‌شود. " +
+                        "روشن: ورود و به‌روزرسانی هم از این DNS می‌روند، ولی فیلترشکن دیگر قطع می‌شود.",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(vpnMode, { prefs.setDnsVpn(it); applyWithPermission() })
+        }
+
         Text(
-            status ?: if (prefs.dnsServers().isEmpty()) "وضعیت: DNS خود گوشی" else "وضعیت: خاموش (اجازهٔ VPN لازم است؛ دوباره انتخاب کنید)",
+            when {
+                prefs.dnsServers().isEmpty() -> "وضعیت: DNS خود گوشی"
+                vpnMode -> status ?: "وضعیت: VPN خاموش است (اجازه لازم است)"
+                else -> "وضعیت: فعال داخل برنامه، بدون VPN"
+            },
             style = MaterialTheme.typography.bodySmall,
-            color = if (status != null) MaterialTheme.extra.profit else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (prefs.dnsServers().isNotEmpty() && (!vpnMode || status != null)) MaterialTheme.extra.profit else MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         OutlinedButton(
@@ -148,13 +168,14 @@ fun DnsSettings(vm: MainVm) {
                         if (servers.isEmpty()) {
                             runCatching {
                                 val t0 = System.currentTimeMillis()
-                                val ip = java.net.InetAddress.getByName("firestore.googleapis.com").hostAddress
-                                "DNS گوشی: firestore.googleapis.com ← $ip (${Fmt.digits((System.currentTimeMillis() - t0).toString())} میلی‌ثانیه)"
+                                val ip = java.net.InetAddress.getByName("firestore.googleapis.com").hostAddress.orEmpty()
+                                "DNS گوشی: $ip (${Fmt.digits((System.currentTimeMillis() - t0).toString())} میلی‌ثانیه) — " + DnsClient.checkFirebase(ip)
                             }.getOrElse { "DNS گوشی جواب نداد: ${it.message}" }
                         } else servers.joinToString("\n") { s ->
                             runCatching {
                                 val (ips, ms) = DnsClient.resolve(s, "firestore.googleapis.com")
-                                "$s ✓  ${ips.firstOrNull() ?: "بدون آدرس"}  (${Fmt.digits(ms.toString())} میلی‌ثانیه)"
+                                val ip = ips.firstOrNull() ?: return@runCatching "$s ✗  بدون آدرس"
+                                "$s: $ip (${Fmt.digits(ms.toString())} میلی‌ثانیه) — " + DnsClient.checkFirebase(ip)
                             }.getOrElse { "$s ✗  ${it.message ?: "بدون پاسخ"}" }
                         }
                     }
@@ -165,7 +186,7 @@ fun DnsSettings(vm: MainVm) {
         msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         Text(
-            "نکته: اندروید هم‌زمان فقط یک VPN را اجازه می‌دهد. با روشن کردن این گزینه، فیلترشکن دیگر قطع می‌شود؛ اگر با فیلترشکن کار می‌کنید «خودکار» را انتخاب کنید. DNSهای اپراتور معمولاً فقط روی سیم‌کارت همان اپراتور جواب می‌دهند.",
+            "نکته: DNSهای ضدتحریم (شکن، بگذر، ۴۰۳، الکترو، رادار) اتصال را به سرور خودشان می‌برند و بیشترشان Firebase را پشتیبانی نمی‌کنند (خطای «دسترسی رد شد»). قبل از استفاده «آزمایش DNS» را بزنید؛ فقط گزینه‌ای که «Firebase در دسترس است ✓» نشان داد مناسب است. DNSهای اپراتور معمولاً فقط روی سیم‌کارت همان اپراتور جواب می‌دهند.",
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }

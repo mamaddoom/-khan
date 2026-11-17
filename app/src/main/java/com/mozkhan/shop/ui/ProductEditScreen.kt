@@ -606,9 +606,9 @@ fun ProductEditScreen(
 
     if (restockOpen) live?.let { l ->
         RestockDialog(
-            l, cur, askSell = true, onDismiss = { restockOpen = false },
-        ) { qty, unitCost, newBuy, newSell, boxBuyN, boxSellN, supplier ->
-            vm.restock(l.id, qty, unitCost, newBuy, newSell, boxBuyN, boxSellN, supplier) { reload++ }
+            l, cur, askSell = true, cheques = vm.cheques.collectAsState().value, onDismiss = { restockOpen = false },
+        ) { qty, unitCost, newBuy, newSell, boxBuyN, boxSellN, supplier, pay ->
+            vm.restock(l.id, qty, unitCost, newBuy, newSell, boxBuyN, boxSellN, supplier, pay?.existingId, pay?.newCheque) { reload++ }
         }
     }
     existing?.let { (eid, ename) ->

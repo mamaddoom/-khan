@@ -19,6 +19,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
+import com.mozkhan.shop.data.Cheque
+import com.mozkhan.shop.util.Jalali
 import com.mozkhan.shop.data.Measure
 import com.mozkhan.shop.data.ProductWithStock
 import com.mozkhan.shop.util.Currency
@@ -28,12 +34,26 @@ import com.mozkhan.shop.util.Fmt
  * New purchase of an existing product: how much came in, what it cost this time, and (optionally) new sell prices.
  * The purchase is recorded as a document, so it shows up in the purchases report.
  */
+/** How a purchase was paid: null = cash; otherwise an existing cheque or a new one defined in the dialog. */
+data class ChequeChoice(val existingId: String?, val newCheque: Cheque?)
+
 @Composable
 fun RestockDialog(
     p: ProductWithStock, cur: Currency, askSell: Boolean,
+    cheques: List<Cheque> = emptyList(),
     onDismiss: () -> Unit,
-    onSubmit: (qtyBase: Double, unitCost: Double, newBuy: Long, newSell: Long?, newBoxBuy: Long?, newBoxSell: Long?, supplier: String) -> Unit,
+    onSubmit: (qtyBase: Double, unitCost: Double, newBuy: Long, newSell: Long?, newBoxBuy: Long?, newBoxSell: Long?, supplier: String, pay: ChequeChoice?) -> Unit,
 ) {
+    var byCheque by remember { mutableStateOf(false) }
+    var chequeNew by remember { mutableStateOf(true) }
+    var pickedId by remember { mutableStateOf<String?>(null) }
+    var cNumber by remember { mutableStateOf("") }
+    var cBank by remember { mutableStateOf("") }
+    var cAmount by remember { mutableStateOf(0L) }
+    var cAmountTouched by remember { mutableStateOf(false) }
+    var cDue by remember { mutableStateOf(Jalali.startOfDay(System.currentTimeMillis() + 30L * 86_400_000L)) }
+    var pickOpen by remember { mutableStateOf(false) }
+    val openCheques = cheques.filter { it.status == "PENDING" }
     var byBox by remember { mutableStateOf(false) }
     var qtyText by remember { mutableStateOf("") }
     var price by remember { mutableStateOf(p.buyPrice) }
@@ -81,6 +101,35 @@ fun RestockDialog(
                     if (p.hasBox && p.unit == Measure.PIECE) MoneyField("قیمت فروش باکس", boxSell, cur, { boxSell = it }, Modifier.fillMaxWidth())
                 }
                 AppField(supplier, { supplier = it }, "تأمین‌کننده / فروشنده (اختیاری)", Modifier.fillMaxWidth())
+                // ---- payment: cash or cheque (new cheque, or one already given for another purchase)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(!byCheque, { byCheque = false }, label = { Text("نقدی") })
+                    FilterChip(byCheque, { byCheque = true }, label = { Text("چکی") })
+                }
+                if (byCheque) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(chequeNew, { chequeNew = true }, label = { Text("تعریف چک جدید") })
+                        FilterChip(!chequeNew, { chequeNew = false }, enabled = openCheques.isNotEmpty(), label = { Text("وصل به چک قبلی") })
+                    }
+                    if (chequeNew) {
+                        AppField(cNumber, { cNumber = it }, "شمارهٔ چک (صیادی یا سریال)", Modifier.fillMaxWidth())
+                        AppField(cBank, { cBank = it }, "بانک (اختیاری)", Modifier.fillMaxWidth())
+                        MoneyField("مبلغ چک", if (cAmountTouched) cAmount else total, cur, { cAmount = it; cAmountTouched = true }, Modifier.fillMaxWidth())
+                        JalaliDateField("تاریخ سررسید", cDue, { cDue = it })
+                    } else {
+                        Box {
+                            val sel = openCheques.firstOrNull { it.id == pickedId }
+                            OutlinedButton(onClick = { pickOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                                Text(sel?.let { chequeLabel(it, cur) } ?: "انتخاب چک…", Modifier.weight(1f))
+                            }
+                            DropdownMenu(pickOpen, { pickOpen = false }) {
+                                openCheques.forEach { c ->
+                                    DropdownMenuItem(text = { Text(chequeLabel(c, cur)) }, onClick = { pickedId = c.id; pickOpen = false })
+                                }
+                            }
+                        }
+                    }
+                }
                 if (askSell && price > 0) {
                     val newBuy = if (boxed) price.toDouble() / size else price.toDouble()
                     if (sell in 1 until Math.round(newBuy)) Text(
@@ -95,7 +144,8 @@ fun RestockDialog(
             }
         },
         confirmButton = {
-            TextButton(enabled = qtyBase > 0 && price > 0 && !sent, onClick = {
+            val chequeOk = !byCheque || (if (chequeNew) cNumber.isNotBlank() && (if (cAmountTouched) cAmount else total) > 0 else pickedId != null)
+            TextButton(enabled = qtyBase > 0 && price > 0 && !sent && chequeOk, onClick = {
                 if (sent) return@TextButton
                 sent = true
                 val newBuy = if (boxed) Math.round(price.toDouble() / size) else price
@@ -105,6 +155,11 @@ fun RestockDialog(
                     if (boxed) price else null,
                     if (askSell && p.hasBox) boxSell else null,
                     supplier,
+                    when {
+                        !byCheque -> null
+                        chequeNew -> ChequeChoice(null, Cheque(java.util.UUID.randomUUID().toString(), cNumber.trim(), cBank.trim(), if (cAmountTouched) cAmount else total, cDue, supplier.trim()))
+                        else -> ChequeChoice(pickedId, null)
+                    },
                 )
                 onDismiss()
             }) { Text("ثبت خرید") }

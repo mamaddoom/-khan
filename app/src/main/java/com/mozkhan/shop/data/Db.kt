@@ -307,9 +307,9 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
 @Database(
     entities = [
         Product::class, StockMove::class, StockDoc::class, Sale::class, SaleItem::class,
-        Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class,
+        Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class, Cheque::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -321,15 +321,16 @@ abstract class AppDb : RoomDatabase() {
     abstract fun credit(): CreditDao
     abstract fun recipes(): RecipeDao
     abstract fun outbox(): OutboxDao
+    abstract fun cheques(): ChequeDao
 
     companion object {
         /** must always equal the @Database version above (drives the pre-migration backup copy in ShopApp) */
-        const val VERSION = 6
+        const val VERSION = 7
 
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx, AppDb::class.java, "shop.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 // Only the throw-away v1 test database may ever be dropped. Never allow this for v2 or later.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
@@ -358,4 +359,27 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.addColumn("stock_docs", "counted", "INTEGER NOT NULL DEFAULT 0")
     }
+}
+
+/** v6 -> v7: cheques given to suppliers, and the cheque a purchase document was paid with */
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `cheques` (`id` TEXT NOT NULL, `number` TEXT NOT NULL, `bank` TEXT NOT NULL, `amount` INTEGER NOT NULL, " +
+                "`dueDate` INTEGER NOT NULL, `payee` TEXT NOT NULL, `note` TEXT NOT NULL, `status` TEXT NOT NULL, `ts` INTEGER NOT NULL, " +
+                "`deleted` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_cheques_dueDate` ON `cheques` (`dueDate`)")
+        db.addColumn("stock_docs", "chequeId", "TEXT")
+    }
+}
+
+@Dao
+interface ChequeDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(c: Cheque)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertAll(list: List<Cheque>)
+    @Query("SELECT * FROM cheques WHERE deleted = 0 ORDER BY dueDate") fun observe(): Flow<List<Cheque>>
+    @Query("SELECT * FROM cheques") suspend fun all(): List<Cheque>
+    @Query("SELECT * FROM cheques WHERE id = :id") suspend fun get(id: String): Cheque?
+    @Query("SELECT * FROM cheques WHERE id IN (:ids)") suspend fun chequesIn(ids: List<String>): List<Cheque>
 }

@@ -7,6 +7,7 @@ import com.mozkhan.shop.data.MIGRATION_2_3
 import com.mozkhan.shop.data.MIGRATION_3_4
 import com.mozkhan.shop.data.MIGRATION_4_5
 import com.mozkhan.shop.data.MIGRATION_5_6
+import com.mozkhan.shop.data.MIGRATION_6_7
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -129,9 +130,20 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate6To7_addsChequesAndLinkColumn() {
+        val db = helper.createDatabase("mig67.db", 6)
+        db.execSQL("INSERT INTO stock_docs (id,ts,kind,note,cost,voided,updatedAt,counted) VALUES ('d1',10,'PURCHASE','x',5000,0,10,0)")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig67.db", 7, true, MIGRATION_6_7)
+        m.query("SELECT chequeId, cost FROM stock_docs WHERE id='d1'").use { c -> c.moveToFirst(); assertTrue(c.isNull(0)); assertEquals(5000L, c.getLong(1)) }
+        m.execSQL("INSERT INTO cheques (id,number,bank,amount,dueDate,payee,note,status,ts,deleted,updatedAt) VALUES ('c1','123','ملت',5000,100,'','','PENDING',1,0,1)")
+        m.query("SELECT COUNT(*) FROM cheques").use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+    }
+
+    @Test
     fun versionConstantMatchesDatabase() {
         // AppDb.VERSION drives the pre-migration safety copy: it must follow the @Database version
-        assertEquals(6, AppDb.VERSION)
+        assertEquals(7, AppDb.VERSION)
     }
 
     @Test

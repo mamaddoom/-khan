@@ -73,6 +73,37 @@ object DnsClient {
         }
     }
 
+    /**
+     * Does [ip] really serve Firebase? Opens TLS with the real host name (SNI + certificate check) and asks for "/".
+     * Google answers 404; anti-sanction relays that do not carry Firebase answer 403 (seen by Firestore as
+     * "permission denied"); a wrong certificate or no answer means the address is useless for Firebase.
+     */
+    fun checkFirebase(ip: String, host: String = "firestore.googleapis.com"): String = try {
+        java.net.Socket().use { raw ->
+            raw.connect(java.net.InetSocketAddress(ip, 443), 6000)
+            raw.soTimeout = 6000
+            val ssl = (javax.net.ssl.SSLSocketFactory.getDefault() as javax.net.ssl.SSLSocketFactory)
+                .createSocket(raw, host, 443, false) as javax.net.ssl.SSLSocket
+            ssl.use { s ->
+                s.startHandshake()
+                if (!javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier().verify(host, s.session)) {
+                    return "گواهی امنیتی معتبر نیست ✗"
+                }
+                s.outputStream.write("GET / HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n".toByteArray())
+                s.outputStream.flush()
+                val line = s.inputStream.bufferedReader().readLine().orEmpty()
+                val code = line.split(' ').getOrNull(1)?.toIntOrNull()
+                when (code) {
+                    403 -> "این DNS به Firebase راه نمی‌دهد (403) ✗"
+                    null -> "پاسخ نامفهوم ✗"
+                    else -> "Firebase در دسترس است ✓"
+                }
+            }
+        }
+    } catch (e: Exception) {
+        "اتصال به Firebase برقرار نشد ✗ (${e.javaClass.simpleName})"
+    }
+
     private fun parseA(b: ByteArray, n: Int, id: Int): List<String> {
         fun u16(i: Int) = ((b[i].toInt() and 0xFF) shl 8) or (b[i + 1].toInt() and 0xFF)
         check(n >= 12 && u16(0) == id) { "پاسخ نامعتبر" }

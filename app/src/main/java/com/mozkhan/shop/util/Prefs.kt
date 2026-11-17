@@ -58,6 +58,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("dns_m2", "")!!
         set(v) = sp.edit().putString("dns_m2", v.trim()).apply()
 
+    /** false (default) = DNS inside the app only, no VPN; true = also the app-only VPN tunnel (covers sign-in and updates) */
+    private val _dnsVpn = MutableStateFlow(sp.getBoolean("dns_vpn", false))
+    val dnsVpn: StateFlow<Boolean> = _dnsVpn.asStateFlow()
+    fun setDnsVpn(v: Boolean) { sp.edit().putBoolean("dns_vpn", v).apply(); _dnsVpn.value = v }
+
     /** The servers the DNS tunnel should use now (empty = off / phone default). */
     fun dnsServers(): List<String> {
         val id = _dns.value

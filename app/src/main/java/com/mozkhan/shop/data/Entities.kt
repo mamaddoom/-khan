@@ -92,6 +92,8 @@ data class StockDoc(
     @ColumnInfo(defaultValue = "0") val updatedAt: Long = 0,
     /** exits only: the value is subtracted from net profit in reports (off by default: an exit moves goods, not money) */
     @ColumnInfo(defaultValue = "0") val counted: Boolean = false,
+    /** purchases paid by cheque: the cheque (see [Cheque]); null = cash / unknown */
+    val chequeId: String? = null,
 )
 
 @Entity(tableName = "sales",indices = [Index("ts"), Index("customerId")])
@@ -243,3 +245,23 @@ data class CreditSum(val customerId: String, val credit: Long, val last: Long)
 data class PaidSum(val customerId: String, val paid: Long, val last: Long)
 data class PrintRow(val id: String, val fingerprints: String)
 data class CodeRow(val id: String, val code: String, val deleted: Boolean)
+
+/**
+ * A cheque the shop GAVE to a supplier (purchase on cheque). One cheque can pay several purchases
+ * (StockDoc.chequeId points here). status: PENDING (not cashed yet), PAID (cleared), BOUNCED, CANCELLED.
+ * [dueDate] = start of the due day (local time).
+ */
+@Entity(tableName = "cheques", indices = [Index("dueDate")])
+data class Cheque(
+    @PrimaryKey val id: String,
+    val number: String,
+    val bank: String = "",
+    val amount: Long = 0,
+    val dueDate: Long,
+    val payee: String = "",
+    val note: String = "",
+    val status: String = "PENDING",
+    val ts: Long = System.currentTimeMillis(),
+    val deleted: Boolean = false,
+    val updatedAt: Long = 0,
+)
