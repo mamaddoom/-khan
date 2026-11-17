@@ -1,5 +1,6 @@
 package com.mozkhan.shop.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,7 +16,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,13 +54,14 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
     val cur by vm.currency.collectAsState()
     val products by vm.products.collectAsState()
     val allDocs by vm.docs.collectAsState()
-    val docs = allDocs.filter { it.kind != "PURCHASE" && !it.voided }
+    val docs = allDocs.filter { it.kind != "PURCHASE" }
     var kind by remember { mutableStateOf("DAMAGE") }
     var note by remember { mutableStateOf("") }
     var query by remember { mutableStateOf("") }
     val lines = remember { mutableStateListOf<Pair<ProductWithStock, Double>>() }
     var open by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
+    var counted by remember { mutableStateOf(false) }
     val q = Fmt.normalize(query).trim()
     val results = if (q.isEmpty()) emptyList() else products.filter { it.trackStock && (it.name.contains(q, true) || it.barcode?.contains(q) == true || it.code.contains(q, true)) }.take(6)
 
@@ -64,7 +71,7 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "بازگشت") }
                 Column {
                     Text("خروج از انبار", style = MaterialTheme.typography.headlineSmall)
-                    Text("بدون فروش و بدون سود؛ فقط ثبت سند", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("فقط کالا از انبار کم می‌شود؛ پول کم نمی‌شود مگر تیک «محاسبهٔ مبلغ» را بزنید", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -104,12 +111,23 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn,
                         )
                     }
+                    Row(Modifier.fillMaxWidth().clickable { counted = !counted }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(counted, { counted = it })
+                        Column(Modifier.weight(1f)) {
+                            Text("محاسبهٔ مبلغ خروج (از سود کم شود)")
+                            Text(
+                                if (counted) "ارزش این کالاها در گزارش به‌عنوان ضرر از سود خالص کم می‌شود"
+                                else "فقط موجودی انبار کم می‌شود؛ مبلغی از سود و صندوق کم نمی‌شود",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     Button(
                         enabled = !saving && lines.isNotEmpty() && lines.all { it.second > 0 },
                         onClick = {
                             if (saving) return@Button // a double tap must not take the goods out twice
                             saving = true
-                            vm.createExit(kind, note, lines.toList()) { lines.clear(); note = "" }
+                            vm.createExit(kind, note, lines.toList(), counted) { lines.clear(); note = ""; counted = false }
                                 .invokeOnCompletion { saving = false }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -126,17 +144,38 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
 @Composable
 private fun DocRow(vm: MainVm, d: StockDoc, cur: Currency, expanded: Boolean, toggle: () -> Unit) {
     var lines by remember { mutableStateOf<List<Pair<String, Double>>>(emptyList()) }
+    var ask by remember { mutableStateOf(false) }
     LaunchedEffect(d.id, expanded) { if (expanded) lines = vm.repo.exitLines(d.id) }
     AppCard(onClick = toggle) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(kindFa(d.kind), style = MaterialTheme.typography.titleSmall)
-                    Text(Jalali.dateTime(d.ts) + if (d.note.isNotBlank()) " • ${d.note}" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(kindFa(d.kind) + if (d.voided) " — باطل شد" else "", style = MaterialTheme.typography.titleSmall,
+                        color = if (d.voided) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        Jalali.dateTime(d.ts) + (if (d.note.isNotBlank()) " • ${d.note}" else "") + if (d.counted) " • از سود کم می‌شود" else "",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Text(Fmt.money(d.cost, cur), color = MaterialTheme.extra.warn, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    Fmt.money(d.cost, cur), style = MaterialTheme.typography.titleSmall,
+                    color = if (d.voided) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.extra.warn,
+                    textDecoration = if (d.voided) TextDecoration.LineThrough else null,
+                )
             }
-            if (expanded) lines.forEach { (n, q) -> Text("• $n × " + Fmt.digits(if (q == Math.floor(q)) q.toLong().toString() else q.toString()), style = MaterialTheme.typography.bodySmall) }
+            if (expanded) {
+                lines.forEach { (n, q) -> Text("• $n × " + Fmt.digits(if (q == Math.floor(q)) q.toLong().toString() else q.toString()), style = MaterialTheme.typography.bodySmall) }
+                if (!d.voided) OutlinedButton(onClick = { ask = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("ابطال خروج (برگشت کالا به انبار)", color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
+    if (ask) AlertDialog(
+        onDismissRequest = { ask = false },
+        title = { Text("ابطال این سند خروج؟") },
+        text = { Text("کالاهای این سند به موجودی انبار برمی‌گردند و سند «باطل شد» علامت می‌خورد. روی گوشی‌های دیگر هم اعمال می‌شود.") },
+        confirmButton = { TextButton(onClick = { vm.voidExit(d.id); ask = false }) { Text("ابطال", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { ask = false }) { Text("انصراف") } },
+    )
 }

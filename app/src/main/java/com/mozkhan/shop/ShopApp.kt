@@ -36,6 +36,8 @@ class ShopApp : Application() {
         updater.check(silent = true)
         com.mozkhan.shop.ml.ImageFingerprint.level = prefs.visionLevel.value
         com.mozkhan.shop.ml.ImageFingerprint.init(this) // loads the embedding model on a background thread
+        // chosen DNS first, so Firebase resolves its servers through it (needs the one-time VPN permission from Settings)
+        if (prefs.dnsServers().isNotEmpty()) com.mozkhan.shop.net.DnsControl.start(this)
         // Runtime Firebase configuration (Settings -> Google) when there is no google-services.json
         if (prefs.fbApiKey.isNotBlank()) sync.configureFromPrefs()
         if (prefs.cloudSync.value) runCatching { sync.start() }.onFailure { CrashLog.record(this, it, "SYNC") }

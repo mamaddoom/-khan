@@ -6,6 +6,7 @@ import com.mozkhan.shop.data.AppDb
 import com.mozkhan.shop.data.MIGRATION_2_3
 import com.mozkhan.shop.data.MIGRATION_3_4
 import com.mozkhan.shop.data.MIGRATION_4_5
+import com.mozkhan.shop.data.MIGRATION_5_6
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -119,9 +120,18 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate5To6_exitDocsNotCountedByDefault() {
+        val db = helper.createDatabase("mig56.db", 5)
+        db.execSQL("INSERT INTO stock_docs (id,ts,kind,note,cost,voided,updatedAt) VALUES ('d1',10,'DAMAGE','x',5000,0,10)")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig56.db", 6, true, MIGRATION_5_6)
+        m.query("SELECT counted, cost FROM stock_docs WHERE id='d1'").use { c -> c.moveToFirst(); assertEquals(0, c.getInt(0)); assertEquals(5000L, c.getLong(1)) }
+    }
+
+    @Test
     fun versionConstantMatchesDatabase() {
         // AppDb.VERSION drives the pre-migration safety copy: it must follow the @Database version
-        assertEquals(5, AppDb.VERSION)
+        assertEquals(6, AppDb.VERSION)
     }
 
     @Test

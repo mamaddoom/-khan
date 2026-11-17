@@ -175,6 +175,8 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
             }
         }
 
+        Group("DNS اتصال (فقط برای این برنامه)") { DnsSettings(vm) }
+
         Group("تنظیمات Google و همگام‌سازی چند گوشی") {
             val sha = remember { com.mozkhan.shop.util.Diag.signingSha1(ctx) }
             if (sha.isNotEmpty()) Text(

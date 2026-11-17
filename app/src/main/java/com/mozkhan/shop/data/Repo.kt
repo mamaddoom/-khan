@@ -350,12 +350,12 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
     val docs = db.stock().observeDocs()
 
     /** Takes goods out of the warehouse without a sale. qty = base units. Counted as a loss, never as revenue. */
-    suspend fun createExit(kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>): StockDoc {
+    suspend fun createExit(kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, counted: Boolean = false): StockDoc {
         require(lines.isNotEmpty()) { "کالایی انتخاب نشده" }
         val now = System.currentTimeMillis()
         val docId = newId()
         val cost = lines.sumOf { (p, q) -> Math.round(q * p.baseCost) }
-        val doc = StockDoc(docId, now, kind, note.trim(), cost, updatedAt = now)
+        val doc = StockDoc(docId, now, kind, note.trim(), cost, updatedAt = now, counted = counted)
         val moves = lines.filter { it.first.trackStock && it.second > 0 }
             .map { (p, q) -> StockMove(newId(), p.id, -q, "EXIT", docId, now, p.baseCost) }
         db.withTransaction {
@@ -367,7 +367,24 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
     }
 
     suspend fun exitLines(docId: String): List<Pair<String, Double>> =
-        db.stock().movesOf(docId).filter { it.reason == "EXIT" }.map { m -> (db.products().raw(m.productId)?.name ?: "؟") to -m.qty }
+        db.stock().movesOf(docId).filter { it.reason == "EXIT" && it.qty < 0 }.map { m -> (db.products().raw(m.productId)?.name ?: "؟") to -m.qty }
+
+    /**
+     * Cancels an exit document (goods taken out by mistake): the goods come back with reversing EXIT moves (+qty, so
+     * the "exited" totals net out) and the document is flagged voided, which is sticky across phones.
+     */
+    suspend fun voidExit(docId: String) {
+        val d = db.stock().doc(docId) ?: return
+        if (d.voided || d.kind == "PURCHASE") return
+        val now = maxOf(System.currentTimeMillis(), d.updatedAt + 1)
+        val rev = db.stock().movesOf(docId).filter { it.reason == "EXIT" && it.qty < 0 }
+            .map { StockMove(newId(), it.productId, -it.qty, "EXIT", docId, now, it.unitCost) }
+        db.withTransaction {
+            db.stock().voidDoc(docId, now)
+            db.stock().insertAll(rev)
+            sync.enqueue(DOCS, docId); sync.enqueue(MOVES, rev.map { it.id })
+        }
+    }
 
     // ------------------------------------------------------------ expenses
     fun expenses(from: Long, to: Long) = db.expenses().observe(from, to)
@@ -437,7 +454,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         o.put("docs", JSONArray().apply {
             db.stock().allDocs().forEach {
                 put(JSONObject().put("id", it.id).put("ts", it.ts).put("kind", it.kind).put("note", it.note).put("cost", it.cost)
-                    .put("voided", it.voided).put("updatedAt", it.updatedAt))
+                    .put("voided", it.voided).put("updatedAt", it.updatedAt).put("counted", it.counted))
             }
         })
         o.put("sales", JSONArray().apply {
@@ -555,7 +572,7 @@ object BackupParser {
             StockMove(it.getString("id"), it.getString("productId"), it.getDouble("qty"), it.getString("reason"), it.str("refId"), it.ts(), it.optDouble("unitCost", 0.0))
         }
         val docs = arr("docs").map {
-            StockDoc(it.getString("id"), it.ts(), it.getString("kind"), it.optString("note", ""), it.optLong("cost"), it.optBoolean("voided"), it.upd())
+            StockDoc(it.getString("id"), it.ts(), it.getString("kind"), it.optString("note", ""), it.optLong("cost"), it.optBoolean("voided"), it.upd(), it.optBoolean("counted"))
         }
         val sales = arr("sales").map {
             Sale(it.getString("id"), it.ts(), it.optLong("subtotal"), it.optLong("discount"), it.optLong("total"),

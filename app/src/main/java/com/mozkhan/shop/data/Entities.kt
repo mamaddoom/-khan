@@ -90,9 +90,11 @@ data class StockDoc(
     val cost: Long = 0,
     @ColumnInfo(defaultValue = "0") val voided: Boolean = false,
     @ColumnInfo(defaultValue = "0") val updatedAt: Long = 0,
+    /** exits only: the value is subtracted from net profit in reports (off by default: an exit moves goods, not money) */
+    @ColumnInfo(defaultValue = "0") val counted: Boolean = false,
 )
 
-@Entity(tableName = "sales", indices = [Index("ts"), Index("customerId")])
+@Entity(tableName = "sales",indices = [Index("ts"), Index("customerId")])
 data class Sale(
     @PrimaryKey val id: String,
     val ts: Long = System.currentTimeMillis(),

@@ -640,7 +640,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
 
     companion object {
         /** 4: documents carry `srv` (server write time) for incremental download; older apps must update */
-        const val SCHEMA = 4
+        const val SCHEMA = 5
 
         const val PRODUCTS = "products"
         const val MOVES = "moves"
@@ -770,10 +770,10 @@ internal fun StockMove.toMap(): Map<String, Any?> = mapOf(
 internal fun Map<String, Any?>.toMove() = StockMove(s("id"), s("productId"), dbl("qty"), s("reason"), sn("refId"), l("ts"), dbl("unitCost")).also { require(it.id.isNotEmpty()) }
 
 internal fun StockDoc.toMap(): Map<String, Any?> = mapOf(
-    "id" to id, "ts" to ts, "kind" to kind, "note" to note, "cost" to cost, "voided" to voided, "updatedAt" to updatedAt,
+    "id" to id, "ts" to ts, "kind" to kind, "note" to note, "cost" to cost, "voided" to voided, "updatedAt" to updatedAt, "counted" to counted,
 )
 
-internal fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s("note"), l("cost"), b("voided"), l("updatedAt", l("ts"))).also { require(it.id.isNotEmpty()) }
+internal fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s("note"), l("cost"), b("voided"), l("updatedAt", l("ts")), b("counted")).also { require(it.id.isNotEmpty()) }
 
 internal fun Sale.toMap(): Map<String, Any?> = mapOf(
     "id" to id, "ts" to ts, "subtotal" to subtotal, "discount" to discount, "total" to total, "cost" to cost,

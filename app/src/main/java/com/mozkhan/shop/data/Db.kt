@@ -309,7 +309,7 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         Product::class, StockMove::class, StockDoc::class, Sale::class, SaleItem::class,
         Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -324,12 +324,12 @@ abstract class AppDb : RoomDatabase() {
 
     companion object {
         /** must always equal the @Database version above (drives the pre-migration backup copy in ShopApp) */
-        const val VERSION = 5
+        const val VERSION = 6
 
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx, AppDb::class.java, "shop.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 // Only the throw-away v1 test database may ever be dropped. Never allow this for v2 or later.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
@@ -350,5 +350,12 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
             "CREATE TABLE IF NOT EXISTS `outbox` (`seq` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `coll` TEXT NOT NULL, `docId` TEXT NOT NULL)",
         )
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_outbox_coll_docId` ON `outbox` (`coll`, `docId`)")
+    }
+}
+
+/** v5 -> v6: an exit document may (optionally) count as a loss in the reports; older exits do not */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumn("stock_docs", "counted", "INTEGER NOT NULL DEFAULT 0")
     }
 }

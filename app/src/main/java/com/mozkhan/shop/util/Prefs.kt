@@ -47,6 +47,28 @@ class Prefs(ctx: Context) {
     val cameraIdle: StateFlow<Int> = _idle.asStateFlow()
     fun setCameraIdle(v: Int) { sp.edit().putInt("camera_idle", v).apply(); _idle.value = v }
 
+    /** DNS of this app: "" = phone default, a preset id, or "manual" (see com.mozkhan.shop.net.DnsPresets) */
+    private val _dns = MutableStateFlow(sp.getString("dns_preset", "")!!)
+    val dnsPreset: StateFlow<String> = _dns.asStateFlow()
+    fun setDnsPreset(v: String) { sp.edit().putString("dns_preset", v).apply(); _dns.value = v }
+    var dnsManual1: String
+        get() = sp.getString("dns_m1", "")!!
+        set(v) = sp.edit().putString("dns_m1", v.trim()).apply()
+    var dnsManual2: String
+        get() = sp.getString("dns_m2", "")!!
+        set(v) = sp.edit().putString("dns_m2", v.trim()).apply()
+
+    /** The servers the DNS tunnel should use now (empty = off / phone default). */
+    fun dnsServers(): List<String> {
+        val id = _dns.value
+        val list = when (id) {
+            "" -> emptyList()
+            com.mozkhan.shop.net.DnsPresets.MANUAL -> listOf(dnsManual1, dnsManual2)
+            else -> com.mozkhan.shop.net.DnsPresets.byId(id)?.let { listOf(it.primary, it.secondary) } ?: emptyList()
+        }
+        return list.map { it.trim() }.filter { com.mozkhan.shop.net.DnsPresets.isIpv4(it) }.distinct()
+    }
+
     /** image-recognition strictness: 0 lenient, 1 normal, 2 strict */
     private val _vision = MutableStateFlow(sp.getInt("vision_level", 1))
     val visionLevel: StateFlow<Int> = _vision.asStateFlow()
