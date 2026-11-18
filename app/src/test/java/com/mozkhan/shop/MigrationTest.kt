@@ -8,6 +8,7 @@ import com.mozkhan.shop.data.MIGRATION_3_4
 import com.mozkhan.shop.data.MIGRATION_4_5
 import com.mozkhan.shop.data.MIGRATION_5_6
 import com.mozkhan.shop.data.MIGRATION_6_7
+import com.mozkhan.shop.data.MIGRATION_7_8
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -141,9 +142,20 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate7To8_addsCashCloses() {
+        val db = helper.createDatabase("mig78.db", 7)
+        db.execSQL("INSERT INTO cheques (id,number,bank,amount,dueDate,payee,note,status,ts,deleted,updatedAt) VALUES ('c1','123','ملت',5000,100,'','','PENDING',1,0,1)")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig78.db", 8, true, MIGRATION_7_8)
+        m.query("SELECT COUNT(*) FROM cheques").use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
+        m.execSQL("INSERT INTO cash_closes (id,day,opening,cashSales,received,expenses,expected,counted,note,deviceName,ts,deleted,updatedAt) VALUES ('x',1,0,100,0,0,100,90,'','a',1,0,1)")
+        m.query("SELECT counted - expected FROM cash_closes").use { c -> c.moveToFirst(); assertEquals(-10L, c.getLong(0)) }
+    }
+
+    @Test
     fun versionConstantMatchesDatabase() {
         // AppDb.VERSION drives the pre-migration safety copy: it must follow the @Database version
-        assertEquals(7, AppDb.VERSION)
+        assertEquals(8, AppDb.VERSION)
     }
 
     @Test

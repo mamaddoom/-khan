@@ -497,7 +497,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
 
     private fun fa(name: String) = when (name) {
         PRODUCTS -> "کالاها"; MOVES -> "حرکت انبار"; DOCS -> "اسناد انبار"; SALES -> "فاکتورها"; ITEMS -> "اقلام فاکتور"
-        EXPENSES -> "هزینه‌ها"; CUSTOMERS -> "مشتریان"; PAYMENTS -> "دریافتی‌ها"; RECIPES -> "دستور ساخت"; CHEQUES -> "چک‌ها"; else -> name
+        EXPENSES -> "هزینه‌ها"; CUSTOMERS -> "مشتریان"; PAYMENTS -> "دریافتی‌ها"; RECIPES -> "دستور ساخت"; CHEQUES -> "چک‌ها"; CLOSES -> "بستن صندوق"; else -> name
     }
 
     /** Queues every local row that the cloud lacks, has in an older version, or does not know to be voided/deleted yet. */
@@ -515,6 +515,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
             PAYMENTS -> pick(db.credit().allPayments(), { it.id }, { it.updatedAt }, { it.deleted })
             RECIPES -> pick(db.recipes().all(), { it.id }, { it.updatedAt }, { it.deleted })
             CHEQUES -> pick(db.cheques().all(), { it.id }, { it.updatedAt }, { it.deleted })
+            CLOSES -> pick(db.cash().all(), { it.id }, { it.updatedAt }, { it.deleted })
             else -> emptyList()
         }
         enqueue(name, ids)
@@ -540,6 +541,8 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
                 { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.recipes().upsertAll(it) })
             CHEQUES -> applyLww(CHEQUES, parse { toCheque() }, { db.cheques().get(it) }, { it.id }, { it.updatedAt }, { it.deleted },
                 { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.cheques().upsertAll(it) })
+            CLOSES -> applyLww(CLOSES, parse { toClose() }, { db.cash().get(it) }, { it.id }, { it.updatedAt }, { it.deleted },
+                { x, f, t -> x.copy(deleted = f, updatedAt = t) }, { db.cash().upsertAll(it) })
         }
     }
 
@@ -639,6 +642,7 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         PAYMENTS -> db.credit().paymentsIn(ids).associate { it.id to it.toMap() }
         RECIPES -> db.recipes().itemsIn(ids).associate { it.id to it.toMap() }
         CHEQUES -> db.cheques().chequesIn(ids).associate { it.id to it.toMap() }
+        CLOSES -> db.cash().closesIn(ids).associate { it.id to it.toMap() }
         else -> emptyMap()
     }
 
@@ -656,8 +660,9 @@ class CloudSync(private val ctx: Context, private val db: AppDb, private val sco
         const val PAYMENTS = "payments"
         const val RECIPES = "recipes"
         const val CHEQUES = "cheques"
+        const val CLOSES = "closes"
 
-        internal val COLLECTIONS = listOf(PRODUCTS, CUSTOMERS, SALES, ITEMS, MOVES, DOCS, EXPENSES, PAYMENTS, RECIPES, CHEQUES)
+        internal val COLLECTIONS = listOf(PRODUCTS, CUSTOMERS, SALES, ITEMS, MOVES, DOCS, EXPENSES, PAYMENTS, RECIPES, CHEQUES, CLOSES)
 
         /** documents per Firestore batch (the hard limit is 500) */
         private const val BATCH = 400
@@ -830,5 +835,15 @@ internal fun com.mozkhan.shop.data.Cheque.toMap(): Map<String, Any?> = mapOf(
 
 internal fun Map<String, Any?>.toCheque() = com.mozkhan.shop.data.Cheque(
     s("id"), s("number"), s("bank"), l("amount"), l("dueDate"), s("payee"), s("note"), s("status").ifBlank { "PENDING" },
+    l("ts"), b("deleted"), l("updatedAt", l("ts")),
+).also { require(it.id.isNotEmpty()) }
+
+internal fun com.mozkhan.shop.data.CashClose.toMap(): Map<String, Any?> = mapOf(
+    "id" to id, "day" to day, "opening" to opening, "cashSales" to cashSales, "received" to received, "expenses" to expenses,
+    "expected" to expected, "counted" to counted, "note" to note, "deviceName" to deviceName, "ts" to ts, "deleted" to deleted, "updatedAt" to updatedAt,
+)
+
+internal fun Map<String, Any?>.toClose() = com.mozkhan.shop.data.CashClose(
+    s("id"), l("day"), l("opening"), l("cashSales"), l("received"), l("expenses"), l("expected"), l("counted"), s("note"), s("deviceName"),
     l("ts"), b("deleted"), l("updatedAt", l("ts")),
 ).also { require(it.id.isNotEmpty()) }

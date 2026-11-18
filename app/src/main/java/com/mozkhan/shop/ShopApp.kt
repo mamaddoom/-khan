@@ -34,6 +34,7 @@ class ShopApp : Application() {
         feedback = Feedback(this, prefs)
         updater = com.mozkhan.shop.util.Updater(this, appScope)
         updater.check(silent = true)
+        com.mozkhan.shop.util.Daily.schedule(this)
         com.mozkhan.shop.ml.ImageFingerprint.level = prefs.visionLevel.value
         com.mozkhan.shop.ml.ImageFingerprint.init(this) // loads the embedding model on a background thread
         // chosen DNS first, so Firebase resolves its servers through it (needs the one-time VPN permission from Settings)
@@ -47,6 +48,9 @@ class ShopApp : Application() {
             db.openHelper.writableDatabase
             prefs.dbSeenVersion = AppDb.VERSION
             repo.ensureCodes()
+            // today's reminders and backup also when background work is held back by the phone (some brands do)
+            kotlinx.coroutines.delay(8_000)
+            com.mozkhan.shop.util.Daily.run(this@ShopApp)
         }
     }
 

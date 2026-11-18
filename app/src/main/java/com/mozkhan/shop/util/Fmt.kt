@@ -123,6 +123,17 @@ object Prices {
         }
         return (Math.round(v / step) * step).coerceAtLeast(if (v >= 0.5) 1L else 0L)
     }
+
+    /**
+     * One price after a group change: [percent] (rounded like [round]) or a fixed [amount] in toman (times [mult], e.g. pieces
+     * in a box). Unset prices (0) stay unset; a price never goes below zero.
+     */
+    fun change(v: Long, percent: Double?, amount: Long?, mult: Int = 1): Long = when {
+        v <= 0 -> v
+        percent != null -> round(v * (1 + percent / 100.0))
+        amount != null -> (v + amount * mult).coerceAtLeast(0)
+        else -> v
+    }
 }
 
 /**

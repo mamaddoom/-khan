@@ -107,12 +107,23 @@ object VoiceParser {
     sealed class Cmd {
         data class Add(val items: List<Item>) : Cmd()
         data class Remove(val query: String) : Cmd()
-        /** method = the spoken words after "ثبت / حساب" (matched against the payment methods by the caller) */
-        data class Checkout(val methodWords: String) : Cmd()
+        /**
+         * method = the spoken words after "ثبت / حساب" (matched against the payment methods by the caller);
+         * customer = the name said after "نسیه" ("نسیه به نام رضایی")
+         */
+        data class Checkout(val methodWords: String, val customer: String = "") : Cmd()
         data class Discount(val percent: Double?, val amount: Double?) : Cmd()
         object Clear : Cmd()
+        /** "برگردون": undo the last voice action */
+        object Undo : Cmd()
+        /** read-only questions: "موجودی بهمن چنده؟"، "قیمت قهوه"، "فروش امروز"، "چک‌های این هفته"، "بدهی رضایی" */
+        data class Query(val ask: Ask, val query: String = "") : Cmd()
+        /** "خرید بهمن ده باکس، هر باکس هشتصد هزار" — [price] per said unit, or the whole amount when [total] */
+        data class Purchase(val item: Item, val price: Double?, val total: Boolean) : Cmd()
         data class Unknown(val text: String) : Cmd()
     }
+
+    enum class Ask { STOCK, PRICE, TODAY, CHEQUES, DEBT }
 
     private val checkoutWords = setOf("ثبت", "تسویه", "حساب", "پرداخت", "ببند", "بستن", "تمام", "تموم")
     private val removeWords = setOf("حذف", "بردار", "پاک", "کم")
@@ -123,7 +134,11 @@ object VoiceParser {
         if (t.isEmpty()) return Cmd.Unknown(text)
         val joined = t.joinToString(" ")
 
+        if (t.any { it in undoWords } || joined.contains("لغو اخرین")) return Cmd.Undo
         if (clearPhrases.any { joined.contains(it) }) return Cmd.Clear
+
+        if (t[0] in purchaseWords && t.size > 1) purchase(t.drop(1))?.let { return it }
+        query(t)?.let { return it }
 
         val di = t.indexOf("تخفیف")
         if (di >= 0) {
@@ -139,6 +154,13 @@ object VoiceParser {
             if (rest.isNotEmpty()) return Cmd.Remove(rest.joinToString(" "))
         }
 
+        // "نسیه به نام رضایی" / "ثبت کن نسیه آقای رضایی"
+        val ni = t.indexOf("نسیه")
+        if (ni >= 0 && t.take(ni).all { it in checkoutWords || it in creditFiller }) {
+            val who = t.drop(ni + 1).filter { it !in creditFiller && it !in checkoutWords }
+            return Cmd.Checkout("نسیه", who.joinToString(" "))
+        }
+
         val ci = t.indexOfFirst { it in checkoutWords }
         if (ci >= 0 && (ci == 0 || t.size <= 4)) {
             val drop = setOf("کن", "بکن", "فاکتور", "رو", "را", "با", "لطفا", "شه", "بشه", "روش")
@@ -148,6 +170,49 @@ object VoiceParser {
 
         val items = items(t)
         return if (items.isEmpty()) Cmd.Unknown(text) else Cmd.Add(items)
+    }
+
+    private val undoWords = setOf("برگردون", "برگردان", "برگرد", "برگردونش", "اندو", "بازگردان")
+    private val purchaseWords = setOf("خرید", "خریدم", "خریدیم", "ورود", "رسید")
+    private val creditFiller = setOf("به", "نام", "اسم", "حساب", "اقای", "اقا", "خانم", "برای", "کن", "بکن", "بنویس", "بزن", "رو", "را", "فاکتور", "مشتری")
+    private val priceMarks = setOf("قیمت", "فی", "هر", "هرکدوم", "هرکدام", "عددی", "به")
+    private val totalMarks = setOf("کل", "جمعا", "مجموعا", "جمع", "روی", "رویهم")
+    private val askWords = setOf(
+        "موجودی", "قیمت", "قیمتش", "چنده", "چقدره", "چقدر", "چند", "تا", "داریم", "هست", "است", "چیه", "چی", "مونده", "مانده",
+        "مقدار", "بگو", "ببینم", "الان", "بدهی", "بدهکاره", "بدهکاری", "بدهیش", "حساب", "اقای", "خانم", "کالای", "عدد", "دونه",
+        "از", "رو", "را", "ما", "مون", "چه", "قدر",
+    )
+
+    /** Read-only questions. Nothing is changed by them, so a loose match is fine. */
+    private fun query(t: List<String>): Cmd.Query? {
+        fun has(vararg w: String) = w.any { it in t }
+        if (has("امروز") && has("فروش", "فروختیم", "درامد", "فروشمون", "فروختم")) return Cmd.Query(Ask.TODAY)
+        if (has("چک", "چکها", "چکهای", "چکا", "سررسید")) return Cmd.Query(Ask.CHEQUES)
+        val rest = t.filter { it !in askWords && it !in filler }.joinToString(" ")
+        if (rest.isEmpty()) return null
+        return when {
+            has("بدهی", "بدهکاره", "بدهکاری", "بدهیش") -> Cmd.Query(Ask.DEBT, rest)
+            has("موجودی", "داریم", "مونده", "مانده") -> Cmd.Query(Ask.STOCK, rest)
+            has("قیمت", "قیمتش", "چنده", "چقدره") -> Cmd.Query(Ask.PRICE, rest)
+            else -> null
+        }
+    }
+
+    /** What follows "خرید": the goods, then optionally "قیمت / هر … N" (per unit) or "کل / جمعاً N" (whole amount). */
+    private fun purchase(t: List<String>): Cmd.Purchase? {
+        val mi = t.indexOfFirst { it in priceMarks || it in totalMarks }
+        val goods = if (mi >= 0) t.take(mi) else t
+        val item = items(goods).firstOrNull() ?: return null
+        var price: Double? = null
+        var total = false
+        if (mi >= 0) {
+            val j = (mi + 1 until t.size).firstOrNull { number(t, it) != null }
+            if (j != null) {
+                price = number(t, j)!!.first
+                total = t.subList(mi, j).any { it in totalMarks }
+            }
+        }
+        return Cmd.Purchase(item, price, total)
     }
 
     /** Splits "دو بهمن و سه وینستون" / "بهمن دو تا، وینستون سه تا" into items. */
@@ -249,7 +314,9 @@ object VoiceParser {
     /** Every word the selling commands use (numbers, units, commands), for the speech recognizer's word list. */
     fun vocabulary(): Set<String> =
         ones.keys + scales.keys + unitWords.keys + filler + checkoutWords + removeWords +
-            setOf("نیم", "و", "تخفیف", "درصد", "درصدی", "فاکتور", "خالی", "کد", "همه", "پاک", "لغو", "اول", "کن", "بکن", "کارت", "نقد", "نقدی", "نسیه")
+            setOf("نیم", "و", "تخفیف", "درصد", "درصدی", "فاکتور", "خالی", "کد", "همه", "پاک", "لغو", "اول", "کن", "بکن", "کارت", "نقد", "نقدی", "نسیه",
+                "امروز", "فروش", "چک", "چکها", "سررسید", "اخرین") +
+            undoWords + purchaseWords + creditFiller + priceMarks + totalMarks + askWords
 
     // ------------------------------------------------------------------ fuzzy matching
     /**

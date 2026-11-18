@@ -1,5 +1,6 @@
 package com.mozkhan.shop.voice
 
+import com.mozkhan.shop.data.Customer
 import com.mozkhan.shop.data.KIND_INGREDIENT
 import com.mozkhan.shop.data.ProductWithStock
 import com.mozkhan.shop.util.PayMethod
@@ -8,6 +9,9 @@ import com.mozkhan.shop.voice.VoiceParser.QUnit
 /**
  * Turns a parsed command into a concrete, checkable plan against the shop's products and payment methods.
  * Nothing is changed here: the screen shows the plan and the user confirms it (a misheard word never sells anything).
+ *
+ * [learned] = what this phone learned from the user's own corrections: spoken form (see [key]) -> product / customer id.
+ * When the engine hears "مالبرو" and the user picks "مارلبرو قرمز" from the choices once, the next time it is found directly.
  */
 object VoiceAssistant {
 
@@ -21,12 +25,15 @@ object VoiceAssistant {
         val warning: String? = null,
     )
 
-    fun lines(items: List<VoiceParser.Item>, products: List<ProductWithStock>): List<Line> {
+    /** The form a spoken name is remembered under: sound-alike letters folded, no spaces. */
+    fun key(spoken: String): String = VoiceParser.sound(spoken).replace(" ", "")
+
+    fun lines(items: List<VoiceParser.Item>, products: List<ProductWithStock>, learned: Map<String, String> = emptyMap()): List<Line> {
         val sellable = products.filter { it.kind != KIND_INGREDIENT }
-        return items.map { it -> line(it, sellable) }
+        return items.map { it -> line(it, sellable, learned) }
     }
 
-    fun line(it: VoiceParser.Item, products: List<ProductWithStock>): Line {
+    fun line(it: VoiceParser.Item, products: List<ProductWithStock>, learned: Map<String, String> = emptyMap()): Line {
         val q = it.query
         // "کد ۱۰۰۲" -> exact product code
         if (q.startsWith("#")) {
@@ -35,6 +42,10 @@ object VoiceAssistant {
             return resolve(it, p, if (p == null) emptyList() else listOf(p), if (p == null) "کالایی با کد $code نیست" else null)
         }
         val m = VoiceParser.best(q, products, { p -> p.name })
+        // a correction the user made before wins over the fuzzy guess
+        learned[key(q)]?.let { id -> products.firstOrNull { p -> p.id == id } }?.let { p ->
+            return resolve(it, p, listOf(p) + m.map { x -> x.item }.filter { x -> x.id != p.id }, null)
+        }
         val sure = VoiceParser.sure(m)
         return resolve(it, sure, m.map { x -> x.item }, if (m.isEmpty()) "کالایی شبیه «$q» پیدا نشد" else null)
     }
@@ -66,6 +77,18 @@ object VoiceAssistant {
         return Line(it.query, p, choices, qty, box, w)
     }
 
+    /** Customer named in "نسیه به نام رضایی": a remembered pick, or a clear fuzzy winner; [choices] for the user otherwise. */
+    data class Who(val customer: Customer?, val choices: List<Customer>)
+
+    fun customer(words: String, customers: List<Customer>, learned: Map<String, String> = emptyMap()): Who {
+        if (words.isBlank()) return Who(null, customers.take(6))
+        val m = VoiceParser.best(words, customers, { it.name }, min = 0.5, limit = 5)
+        learned["c:" + key(words)]?.let { id -> customers.firstOrNull { it.id == id } }?.let { c ->
+            return Who(c, listOf(c) + m.map { it.item }.filter { it.id != c.id })
+        }
+        return Who(VoiceParser.sure(m), m.map { it.item })
+    }
+
     /** Payment method named in "ثبت کن کارت به کارت"; null when nothing was said (the default method is used). */
     fun method(words: String, methods: List<PayMethod>): PayMethod? {
         if (words.isBlank()) return null
@@ -94,31 +117,37 @@ object VoiceAssistant {
      * The best one is the reading that makes the most sense for THIS shop: commands with their key words, or items
      * whose names clearly match real products. Ties keep the engine's own order (most likely first).
      */
-    fun pickBest(readings: List<String>, products: List<ProductWithStock>, methods: List<PayMethod>): String? {
+    fun pickBest(
+        readings: List<String>, products: List<ProductWithStock>, methods: List<PayMethod>, learned: Map<String, String> = emptyMap(),
+    ): String? {
         val list = readings.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         if (list.size <= 1) return list.firstOrNull()
         val sellable = products.filter { it.kind != KIND_INGREDIENT }
-        return list.withIndex().maxByOrNull { (i, text) -> fit(text, sellable, methods) - 0.01 * i }?.value
+        return list.withIndex().maxByOrNull { (i, text) -> fit(text, sellable, methods, learned) - 0.01 * i }?.value
+    }
+
+    private fun itemFit(item: VoiceParser.Item, products: List<ProductWithStock>, learned: Map<String, String>): Double {
+        val l = line(item, products, learned)
+        return when {
+            l.product != null && l.warning == null -> 1.0 + VoiceParser.score(item.query, l.product.name) + (if (item.qty != null) 0.2 else 0.0)
+            l.product != null -> 0.8
+            l.choices.isNotEmpty() -> 0.3
+            else -> -0.7
+        }
     }
 
     /** How well one reading fits the shop (higher = better). */
-    fun fit(text: String, products: List<ProductWithStock>, methods: List<PayMethod>): Double =
+    fun fit(text: String, products: List<ProductWithStock>, methods: List<PayMethod>, learned: Map<String, String> = emptyMap()): Double =
         when (val c = VoiceParser.parse(text)) {
-            is VoiceParser.Cmd.Add -> c.items.sumOf { item ->
-                val l = line(item, products)
-                when {
-                    l.product != null && l.warning == null -> 1.0 + VoiceParser.score(item.query, l.product.name) + (if (item.qty != null) 0.2 else 0.0)
-                    l.product != null -> 0.8
-                    l.choices.isNotEmpty() -> 0.3
-                    else -> -0.7
-                }
-            }
+            is VoiceParser.Cmd.Add -> c.items.sumOf { itemFit(it, products, learned) }
+            is VoiceParser.Cmd.Purchase -> 0.4 + itemFit(c.item, products, learned) + (if (c.price != null) 0.2 else 0.0)
             is VoiceParser.Cmd.Checkout -> 1.6 + (if (c.methodWords.isBlank() || method(c.methodWords, methods) != null) 0.3 else 0.0)
-            is VoiceParser.Cmd.Remove, is VoiceParser.Cmd.Discount, VoiceParser.Cmd.Clear -> 1.6
+            is VoiceParser.Cmd.Query -> 1.5
+            is VoiceParser.Cmd.Remove, is VoiceParser.Cmd.Discount, VoiceParser.Cmd.Clear, VoiceParser.Cmd.Undo -> 1.6
             is VoiceParser.Cmd.Unknown -> -1.0
         }
 
-    /** Words for the speech recognizer's word list: product names, payment methods and all command words. */
-    fun hints(products: List<ProductWithStock>, methods: List<PayMethod>): List<String> =
-        VoiceParser.vocabulary().toList() + products.map { it.name } + methods.map { it.name }
+    /** Words for the speech recognizer's word list: product names, payment methods, customers and all command words. */
+    fun hints(products: List<ProductWithStock>, methods: List<PayMethod>, customers: List<Customer> = emptyList()): List<String> =
+        VoiceParser.vocabulary().toList() + products.map { it.name } + methods.map { it.name } + customers.map { it.name }
 }

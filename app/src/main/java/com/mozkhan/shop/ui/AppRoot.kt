@@ -215,6 +215,7 @@ fun AppRoot(vm: MainVm, activity: Activity) {
             composable("exits") { ExitScreen(vm, onBack = { nav.popBackStack() }) }
             composable("cafe") { CafeScreen(vm, onBack = { nav.popBackStack() }) }
             composable("cheques") { ChequesScreen(vm, onBack = { nav.popBackStack() }) }
+            composable("cash") { CashCloseScreen(vm, onBack = { nav.popBackStack() }) }
             composable("buy") { BuyAdviceScreen(vm, onBack = { nav.popBackStack() }, onBuy = { pid -> nav.navigate(editRoute(id = pid, mode = "restock")) }) }
             composable(
                 "edit?id={id}&barcode={barcode}&preset={preset}&mode={mode}",
@@ -234,6 +235,23 @@ fun AppRoot(vm: MainVm, activity: Activity) {
                     onClose = { nav.popBackStack() },
                     onOpen = { pid -> nav.popBackStack(); nav.navigate(editRoute(id = pid, mode = "restock")) },
                 )
+            }
+        }
+        // a tapped notification opens its screen (cheques due -> cheques, low stock -> buying advice)
+        val wanted by com.mozkhan.shop.util.Notifier.pendingRoute.collectAsState()
+        LaunchedEffect(wanted) {
+            val r = wanted ?: return@LaunchedEffect
+            com.mozkhan.shop.util.Notifier.pendingRoute.value = null
+            if (salesOnly && (r == "cheques" || r == "buy")) deny() else runCatching { nav.navigate(r) { launchSingleTop = true } }
+        }
+        // reminders need the notification permission (Android 13+): asked once, never again
+        val askNotif = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
+        LaunchedEffect(Unit) {
+            if (android.os.Build.VERSION.SDK_INT >= 33 && !vm.prefs.notifAsked &&
+                androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                vm.prefs.notifAsked = true
+                askNotif.launch(android.Manifest.permission.POST_NOTIFICATIONS)
             }
         }
         // tiny server-status dot: green = server really reached, red = error / no connection, amber = checking, gray = sync off

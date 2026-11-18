@@ -3,6 +3,7 @@ package com.mozkhan.shop.data
 import androidx.room.withTransaction
 import com.mozkhan.shop.sync.CloudSync
 import com.mozkhan.shop.sync.CloudSync.Companion.CHEQUES
+import com.mozkhan.shop.sync.CloudSync.Companion.CLOSES
 import com.mozkhan.shop.sync.CloudSync.Companion.CUSTOMERS
 import com.mozkhan.shop.sync.CloudSync.Companion.DOCS
 import com.mozkhan.shop.sync.CloudSync.Companion.EXPENSES
@@ -16,6 +17,7 @@ import com.mozkhan.shop.util.Fmt
 import com.mozkhan.shop.util.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -276,6 +278,30 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         saveCheque(c.copy(deleted = true))
     }
 
+    // ------------------------------------------------------------ end-of-day cash count
+    val closes = db.cash().observe()
+
+    /** Money that went through the drawer on [day] (start of day), from every phone's records. */
+    data class CashDay(val cashSales: Long, val received: Long, val expenses: Long)
+
+    suspend fun cashDay(day: Long): CashDay {
+        val to = day + 86_400_000L - 1
+        val sales = db.sales().observeSales(day, to).first()
+        val received = db.credit().observePaidInRange(day, to).first()
+        val expenses = db.expenses().observeSum(day, to).first()
+        return CashDay(sales.filter { !it.voided && it.payment == "CASH" }.sumOf { it.total }, received, expenses)
+    }
+
+    suspend fun saveClose(c: CashClose) {
+        val now = maxOf(System.currentTimeMillis(), (db.cash().get(c.id)?.updatedAt ?: 0L) + 1)
+        db.withTransaction { db.cash().upsert(c.copy(updatedAt = now)); sync.enqueue(CLOSES, c.id) }
+    }
+
+    suspend fun deleteClose(id: String) {
+        val c = db.cash().get(id) ?: return
+        saveClose(c.copy(deleted = true))
+    }
+
     // ------------------------------------------------------------ cafe recipes
     /** Replaces the recipe of a drink with [lines] = (ingredientId, qty per drink in base units). */
     suspend fun saveRecipe(drinkId: String, lines: List<Pair<String, Double>>) {
@@ -526,6 +552,13 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
                     .put("payee", it.payee).put("note", it.note).put("status", it.status).put("ts", it.ts).put("deleted", it.deleted).put("updatedAt", it.updatedAt))
             }
         })
+        o.put("closes", JSONArray().apply {
+            db.cash().all().forEach {
+                put(JSONObject().put("id", it.id).put("day", it.day).put("opening", it.opening).put("cashSales", it.cashSales).put("received", it.received)
+                    .put("expenses", it.expenses).put("expected", it.expected).put("counted", it.counted).put("note", it.note)
+                    .put("deviceName", it.deviceName).put("ts", it.ts).put("deleted", it.deleted).put("updatedAt", it.updatedAt))
+            }
+        })
         o.toString()
     }
 
@@ -548,6 +581,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
             val pay = Merge.newer(b.payments, db.credit().allPayments().associateBy { it.id }, { it.id }, { it.updatedAt })
             val r = Merge.newer(b.recipes, db.recipes().all().associateBy { it.id }, { it.id }, { it.updatedAt })
             val ch = Merge.newer(b.cheques, db.cheques().all().associateBy { it.id }, { it.id }, { it.updatedAt })
+            val cl = Merge.newer(b.closes, db.cash().all().associateBy { it.id }, { it.id }, { it.updatedAt })
             db.products().upsertAll(p)
             db.stock().insertAll(b.moves)
             db.stock().insertDocs(d)
@@ -558,6 +592,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
             db.credit().upsertPayments(pay)
             db.recipes().upsertAll(r)
             db.cheques().upsertAll(ch)
+            db.cash().upsertAll(cl)
         }
         // old files have no codes / kinds: repair, then re-upload what changed
         ensureCodes()
@@ -573,6 +608,7 @@ class Backup(
     val products: List<Product>, val moves: List<StockMove>, val docs: List<StockDoc>, val sales: List<Sale>,
     val items: List<SaleItem>, val expenses: List<Expense>, val customers: List<Customer>,
     val payments: List<CreditPayment>, val recipes: List<RecipeItem>, val cheques: List<Cheque> = emptyList(),
+    val closes: List<CashClose> = emptyList(),
 )
 
 object BackupParser {
@@ -629,6 +665,11 @@ object BackupParser {
             Cheque(it.getString("id"), it.optString("number", ""), it.optString("bank", ""), it.optLong("amount"), it.optLong("dueDate", it.ts()),
                 it.optString("payee", ""), it.optString("note", ""), it.optString("status", "PENDING"), it.ts(), it.optBoolean("deleted"), it.upd())
         }
-        return Backup(products, moves, docs, sales, items, expenses, customers, payments, recipes, cheques)
+        val closes = arr("closes").map {
+            CashClose(it.getString("id"), it.optLong("day", it.ts()), it.optLong("opening"), it.optLong("cashSales"), it.optLong("received"),
+                it.optLong("expenses"), it.optLong("expected"), it.optLong("counted"), it.optString("note", ""), it.optString("deviceName", ""),
+                it.ts(), it.optBoolean("deleted"), it.upd())
+        }
+        return Backup(products, moves, docs, sales, items, expenses, customers, payments, recipes, cheques, closes)
     }
 }

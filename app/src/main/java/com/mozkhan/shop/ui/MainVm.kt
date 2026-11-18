@@ -196,10 +196,11 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     private val _checkingOut = MutableStateFlow(false)
     val checkingOut = _checkingOut.asStateFlow()
 
-    fun checkout(payment: String, customerId: String?, onDone: (Sale) -> Unit) {
+    fun checkout(payment: String, customerId: String?, viaVoice: Boolean = false, onDone: (Sale) -> Unit) {
         if (_checkingOut.value) return // a second tap while the first sale is still being saved
         val lines = _cart.value
         if (lines.isEmpty()) return
+        val discountBefore = _discount.value
         _checkingOut.value = true
         viewModelScope.launch(handler) {
             try {
@@ -208,12 +209,46 @@ class MainVm(app: Application) : AndroidViewModel(app) {
                 // only what was sold leaves the cart: an item scanned while saving stays
                 _cart.value = CartOps.subtract(_cart.value, lines)
                 _discount.value = 0
+                if (viaVoice) _voiceUndo.value = VoiceUndo("ثبت فاکتور " + money(sale.total), lines, discountBefore, sale.id)
                 onDone(sale)
+                lowAfterSale(lines)
             } finally {
                 _checkingOut.value = false
             }
         }
     }
+
+    /** Goods that fell to their minimum with THIS sale get a notification right away (once per product per day). */
+    private suspend fun lowAfterSale(lines: List<CartLine>) {
+        if (!prefs.lowAlert.value) return
+        val crossed = lines.map { it.product }.distinctBy { it.id }.filter { it.trackStock && it.minStock > 0 && it.stock > it.minStock }
+            .mapNotNull { repo.byId(it.id) }.filter { it.low }
+        if (crossed.isNotEmpty()) com.mozkhan.shop.util.Daily.lowNotice(getApplication(), crossed)
+    }
+
+    // ------------------------------------------------------------------ voice: undo the last voice action
+    /** what the cart looked like before the last voice action; [saleId] = that action recorded a sale (undo voids it) */
+    data class VoiceUndo(val label: String, val cart: List<CartLine>, val discount: Long, val saleId: String? = null)
+    private val _voiceUndo = MutableStateFlow<VoiceUndo?>(null)
+    val voiceUndo = _voiceUndo.asStateFlow()
+    fun rememberVoiceUndo(label: String) { _voiceUndo.value = VoiceUndo(label, _cart.value, _discount.value) }
+
+    /** Puts the cart back as it was (and voids the sale when the last voice action recorded one). */
+    fun undoVoice(): String? {
+        val u = _voiceUndo.value ?: return null
+        _voiceUndo.value = null
+        if (u.saleId != null) launch { repo.voidSale(u.saleId) }
+        _cart.value = u.cart
+        _discount.value = u.discount
+        touch()
+        return u.label
+    }
+
+    // ------------------------------------------------------------------ end-of-day cash count
+    val closes: StateFlow<List<com.mozkhan.shop.data.CashClose>> = repo.closes.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    suspend fun cashDay(day: Long) = repo.cashDay(day)
+    fun saveClose(c: com.mozkhan.shop.data.CashClose, onDone: () -> Unit = {}) = launch { repo.saveClose(c); fb.success(); onDone() }
+    fun deleteClose(id: String) = launch { repo.deleteClose(id) }
 
     // ------------------------------------------------------------------ scanning
     private val _pending = MutableStateFlow<Pending?>(null)
@@ -338,12 +373,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
      * Every product is re-read from the database, so no other field can be lost.
      */
     fun bulkChange(ids: Set<String>?, category: String?, percent: Double?, amount: Long?, field: String) = launch {
-        fun adj(v: Long, mult: Int = 1): Long = when {
-            v <= 0 -> v
-            percent != null -> Prices.round(v * (1 + percent / 100.0))
-            amount != null -> (v + amount * mult).coerceAtLeast(0)
-            else -> v
-        }
+        fun adj(v: Long, mult: Int = 1): Long = Prices.change(v, percent, amount, mult)
         products.value.filter { (ids == null || it.id in ids) && (category == null || it.category == category) }.forEach { w ->
             val p = repo.raw(w.id) ?: return@forEach
             val b = p.boxSize.coerceAtLeast(1)

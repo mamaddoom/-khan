@@ -160,6 +160,7 @@ fun ProductsScreen(vm: MainVm, onEdit: (String) -> Unit, onNew: () -> Unit, canM
 
     if (priceDialog) PriceChangeDialog(
         cats = usedCats, cur = cur, selectedCount = selected.size,
+        targets = { c -> products.filter { if (selected.isNotEmpty()) it.id in selected else (c == null || it.category == c) } },
         onDismiss = { priceDialog = false },
     ) { category, percent, amount, field ->
         vm.bulkChange(if (selected.isNotEmpty()) selected else null, if (selected.isEmpty()) category else null, percent, amount, field)
@@ -171,6 +172,7 @@ fun ProductsScreen(vm: MainVm, onEdit: (String) -> Unit, onNew: () -> Unit, canM
 @Composable
 private fun PriceChangeDialog(
     cats: List<String>, cur: Currency, selectedCount: Int,
+    targets: (String?) -> List<com.mozkhan.shop.data.ProductWithStock>,
     onDismiss: () -> Unit, onApply: (String?, Double?, Long?, String) -> Unit,
 ) {
     var byPercent by remember { mutableStateOf(true) }
@@ -201,6 +203,27 @@ private fun PriceChangeDialog(
                 if (selectedCount == 0) LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     item { FilterChip(cat == null, { cat = null }, label = { Text("همه کالاها") }) }
                     items(cats) { c -> FilterChip(cat == c, { cat = c }, label = { Text(c) }) }
+                }
+                // preview: how many goods change, and a few of them before -> after
+                val sign = if (neg) -1 else 1
+                val pctV = if (byPercent) sign * Fmt.parseDouble(pct) else null
+                val amtV = if (!byPercent) sign * amount else null
+                val affected = targets(cat)
+                if (valid) {
+                    val shownField = if (field == "buy") "خرید" else "فروش"
+                    Text(
+                        Fmt.digits("${affected.size} کالا تغییر می‌کند") + " (نمونه، قیمت $shownField):",
+                        style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                    )
+                    affected.take(5).forEach { p ->
+                        val old = if (field == "buy") p.buyPrice else p.sellPrice
+                        val new = com.mozkhan.shop.util.Prices.change(old, pctV, amtV)
+                        Text(
+                            p.name + ": " + Fmt.money(old, cur, false) + " ← " + Fmt.money(new, cur),
+                            style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (affected.size > 5) Text(Fmt.digits("و ${affected.size - 5} کالای دیگر…"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(
                     if (byPercent) "قیمت‌های بالای ۱۰ هزار تومان به نزدیک‌ترین صد، و قیمت‌های کمتر به نزدیک‌ترین ده یا یک گرد می‌شوند. قیمت باکس هم همین تغییر را می‌گیرد."

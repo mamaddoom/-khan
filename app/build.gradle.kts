@@ -10,7 +10,7 @@ if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
 
-val appVersionName = "1.9"
+val appVersionName = "2.0"
 
 // installable files are named MozKhan-<version>-debug.apk / MozKhan-<version>-release.apk
 base { archivesName.set("MozKhan-$appVersionName") }
@@ -107,6 +107,8 @@ dependencies {
     // offline Persian speech recognition (voice assistant); the model is downloaded at runtime
     implementation("com.alphacephei:vosk-android:0.3.75")
     implementation("net.java.dev.jna:jna:5.18.1@aar")
+    // daily reminders (cheques, low stock) and the automatic backup
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play)
     implementation(libs.googleid)

@@ -61,6 +61,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.mozkhan.shop.data.Customer
+import com.mozkhan.shop.data.KIND_INGREDIENT
 import com.mozkhan.shop.data.ProductWithStock
 import com.mozkhan.shop.util.Currency
 import com.mozkhan.shop.util.Fmt
@@ -69,6 +71,8 @@ import com.mozkhan.shop.voice.VoiceAssistant
 import com.mozkhan.shop.voice.VoiceEngine
 import com.mozkhan.shop.voice.VoiceParser
 import com.mozkhan.shop.voice.VoiceParser.Cmd
+import com.mozkhan.shop.voice.Spoken
+import com.mozkhan.shop.voice.VoiceSpeaker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -79,16 +83,20 @@ class VoiceListen(private val ctx: Context, private val scope: CoroutineScope, p
     var heard by mutableStateOf<VoiceEngine.Heard?>(null)
     var error by mutableStateOf<String?>(null)
     private var session: VoiceEngine.Session? = null
+    private val feedback get() = (ctx as? com.mozkhan.shop.ShopApp)?.feedback
 
     fun start() {
         if (listening) return
+        // the recognizer must not hear the phone talking
+        VoiceSpeaker.stop()
         partial = ""; heard = null; error = null; listening = true
+        feedback?.listening(true)
         scope.launch {
             session = VoiceEngine.listen(
                 ctx, options(),
                 onPartial = { partial = it },
-                onFinal = { heard = it; listening = false; session = null },
-                onError = { error = it; listening = false; session = null },
+                onFinal = { heard = it; listening = false; session = null; feedback?.listening(false) },
+                onError = { error = it; listening = false; session = null; feedback?.listening(false) },
             )
             if (session == null) listening = false
         }
@@ -189,6 +197,9 @@ private fun MicPanel(v: VoiceListen, hint: String, onMic: () -> Unit) {
 
 private fun toToman(v: Double, cur: Currency): Long = Math.round(v / cur.factor)
 
+private const val SELL_HINT = "مثال‌ها: «دو تا بهمن و یک وینستون»، «دویست گرم قهوه»، «تخفیف ده درصد»، «ثبت کن کارتی»، «نسیه به نام رضایی»، " +
+    "«موجودی بهمن چنده؟»، «قیمت قهوه»، «فروش امروز»، «چک‌های این هفته»، «خرید بهمن ده باکس، هر باکس هشتصد هزار»، «برگردون»"
+
 // ===================================================================== selling by voice
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -198,12 +209,29 @@ fun VoiceSellSheet(vm: MainVm, onDismiss: () -> Unit, onMessage: (String) -> Uni
     LaunchedEffect(Unit) { VoiceEngine.refresh(ctx) }
     val ready = st is VoiceEngine.State.Installed || st is VoiceEngine.State.Ready || st is VoiceEngine.State.Loading
     val products by vm.products.collectAsState()
+    val allProducts by vm.allProducts.collectAsState()
     val cart by vm.cart.collectAsState()
     val cur by vm.currency.collectAsState()
     val methods by vm.prefs.payMethods.collectAsState()
     val checkingOut by vm.checkingOut.collectAsState()
-    // the second recognizer only knows this shop's words: product names, payment methods, numbers and commands
-    val v = rememberVoiceListen { VoiceEngine.Options(maxMs = 20_000, hints = VoiceAssistant.hints(vm.products.value, vm.prefs.payMethods.value)) }
+    val customers by vm.customers.collectAsState()
+    val debtors by vm.debtors.collectAsState()
+    val cheques by vm.cheques.collectAsState()
+    val today by vm.todayTotals.collectAsState()
+    val learned by vm.prefs.voiceLearned.collectAsState()
+    val speakOn by vm.prefs.voiceSpeak.collectAsState()
+    val salesOnly by vm.prefs.salesOnly.collectAsState()
+    val undo by vm.voiceUndo.collectAsState()
+    LaunchedEffect(speakOn) { if (speakOn) VoiceSpeaker.init(ctx) }
+    fun say(s: String) = VoiceSpeaker.speak(ctx, s, speakOn)
+    fun learn(spoken: String, id: String, customer: Boolean = false) {
+        if (spoken.isNotBlank() && !spoken.startsWith("#")) vm.prefs.learnVoice((if (customer) "c:" else "") + VoiceAssistant.key(spoken), id)
+    }
+
+    // the second recognizer only knows this shop's words: product names, payment methods, customers, numbers and commands
+    val v = rememberVoiceListen {
+        VoiceEngine.Options(maxMs = 20_000, hints = VoiceAssistant.hints(vm.allProducts.value, vm.prefs.payMethods.value, vm.customers.value))
+    }
     val mic = rememberMicStarter(v)
 
     // start listening right away once everything is ready
@@ -211,35 +239,44 @@ fun VoiceSellSheet(vm: MainVm, onDismiss: () -> Unit, onMessage: (String) -> Uni
     LaunchedEffect(ready) { if (ready && !autoStarted) { autoStarted = true; mic() } }
 
     // of all readings the engine offers, the one that makes most sense for this shop
-    val heard = remember(v.heard) { v.heard?.let { h -> VoiceAssistant.pickBest(listOf(h.text) + h.alternatives, products, methods) ?: h.text } }
+    val heard = remember(v.heard) { v.heard?.let { h -> VoiceAssistant.pickBest(listOf(h.text) + h.alternatives, allProducts, methods, learned) ?: h.text } }
     val cmd = remember(heard) { heard?.let { VoiceParser.parse(it) } }
     val picks = remember(heard) { mutableStateMapOf<Int, ProductWithStock>() }
     val qtyEdit = remember(heard) { mutableStateMapOf<Int, Double>() }
+    var pickedCustomer by remember(heard) { mutableStateOf<Customer?>(null) }
 
-    fun done(msg: String) { onMessage(msg); v.heard = null }
+    fun done(msg: String, spoken: String? = null) { onMessage(msg); spoken?.let { say(it) }; v.heard = null }
+    val subtotal = cart.sumOf { it.total }
 
-    ModalBottomSheet(onDismissRequest = { v.stop(); onDismiss() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    ModalBottomSheet(onDismissRequest = { v.stop(); VoiceSpeaker.stop(); onDismiss() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(
             Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp).navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("دستیار صوتی فروش", style = MaterialTheme.typography.titleLarge)
+            Text("دستیار صوتی فروشگاه", style = MaterialTheme.typography.titleLarge)
             if (!ready) { VoiceModelCard(compact = true); return@Column }
 
             if (heard == null || v.listening) {
-                MicPanel(v, "مثال: «دو تا بهمن و یک وینستون»، «دویست گرم قهوه»، «تخفیف ده درصد»، «ثبت کن کارتی»", mic)
+                MicPanel(v, SELL_HINT, mic)
+                if (!v.listening && undo != null) TextButton(onClick = { vm.undoVoice()?.let { onMessage("«$it» برگردانده شد") } }) {
+                    Text("برگرداندن آخرین کار صوتی: " + undo!!.label)
+                }
                 return@Column
             }
 
             Text("شنیدم: «$heard»", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val again: @Composable () -> Unit = { OutlinedButton(onClick = mic) { Text("دوباره") } }
             when (cmd) {
                 is Cmd.Add -> {
+                    val sellable = products.filter { it.kind != KIND_INGREDIENT }
                     val lines = cmd.items.mapIndexed { i, item ->
-                        val base = VoiceAssistant.line(item, products.filter { it.kind != com.mozkhan.shop.data.KIND_INGREDIENT })
+                        val base = VoiceAssistant.line(item, sellable, learned)
                         val l = picks[i]?.let { VoiceAssistant.resolve(item, it, base.choices, null) } ?: base
                         qtyEdit[i]?.let { l.copy(qty = it) } ?: l
                     }
-                    lines.forEachIndexed { i, l -> PlanRow(l, cur, onPick = { picks[i] = it }, onQty = { qtyEdit[i] = it }) }
+                    lines.forEachIndexed { i, l ->
+                        PlanRow(l, cur, onPick = { picks[i] = it; learn(cmd.items[i].query, it.id) }, onQty = { qtyEdit[i] = it })
+                    }
                     val ok = lines.filter { it.product != null }
                     val sum = ok.sumOf { l ->
                         val p = l.product!!
@@ -248,10 +285,14 @@ fun VoiceSellSheet(vm: MainVm, onDismiss: () -> Unit, onMessage: (String) -> Uni
                     if (ok.isNotEmpty()) SumRow("جمع این اقلام", Fmt.money(Math.round(sum), cur))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(enabled = ok.isNotEmpty(), onClick = {
+                            vm.rememberVoiceUndo(Fmt.digits("افزودن ${ok.size} قلم"))
                             ok.forEach { l -> vm.addToCart(l.product!!, l.qty, box = l.box) }
-                            done(Fmt.digits("${ok.size} قلم به فاکتور اضافه شد"))
+                            done(
+                                Fmt.digits("${ok.size} قلم به فاکتور اضافه شد"),
+                                Spoken.number(ok.size.toLong()) + " قلم اضافه شد. جمع فاکتور " + Spoken.money(subtotal + Math.round(sum), cur),
+                            )
                         }, modifier = Modifier.weight(1f)) { Text("افزودن به فاکتور") }
-                        OutlinedButton(onClick = mic) { Text("دوباره") }
+                        again()
                     }
                 }
                 is Cmd.Remove -> {
@@ -259,49 +300,230 @@ fun VoiceSellSheet(vm: MainVm, onDismiss: () -> Unit, onMessage: (String) -> Uni
                     val line = m.firstOrNull()?.item
                     Text(if (line == null) "«${cmd.query}» در فاکتور نیست" else "حذف «${line.product.name}» از فاکتور؟")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = line != null, onClick = { vm.removeLine(line!!.key); done("«${line.product.name}» حذف شد") }, modifier = Modifier.weight(1f)) { Text("حذف") }
-                        OutlinedButton(onClick = mic) { Text("دوباره") }
+                        Button(enabled = line != null, onClick = {
+                            vm.rememberVoiceUndo("حذف " + line!!.product.name)
+                            vm.removeLine(line.key); done("«${line.product.name}» حذف شد", line.product.name + " حذف شد")
+                        }, modifier = Modifier.weight(1f)) { Text("حذف") }
+                        again()
                     }
                 }
                 is Cmd.Discount -> {
-                    val subtotal = cart.sumOf { it.total }
                     val amount = (cmd.percent?.let { Math.round(subtotal * it / 100.0) } ?: toToman(cmd.amount ?: 0.0, cur)).coerceIn(0, subtotal)
                     Text(if (subtotal <= 0) "فاکتور خالی است" else "تخفیف " + Fmt.money(amount, cur) + (cmd.percent?.let { Fmt.digits(" (${it.toInt()}٪)") } ?: ""))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = subtotal > 0, onClick = { vm.setDiscount(amount); done("تخفیف اعمال شد") }, modifier = Modifier.weight(1f)) { Text("اعمال تخفیف") }
-                        OutlinedButton(onClick = mic) { Text("دوباره") }
+                        Button(enabled = subtotal > 0, onClick = {
+                            vm.rememberVoiceUndo("تخفیف")
+                            vm.setDiscount(amount); done("تخفیف اعمال شد", "تخفیف " + Spoken.money(amount, cur) + " اعمال شد")
+                        }, modifier = Modifier.weight(1f)) { Text("اعمال تخفیف") }
+                        again()
                     }
                 }
                 is Cmd.Checkout -> {
                     val m = VoiceAssistant.method(cmd.methodWords, methods) ?: methods.first { it.enabled }
-                    val total = (cart.sumOf { it.total } - vm.discount.value).coerceAtLeast(0)
-                    when {
-                        cart.isEmpty() -> Text("فاکتور خالی است")
-                        m.id == PayMethods.CREDIT -> Text("فروش نسیه مشتری لازم دارد؛ از دکمهٔ «تسویه» استفاده کنید.")
-                        else -> Text("ثبت فاکتور " + Fmt.money(total, cur) + " با «" + m.name + "»؟", style = MaterialTheme.typography.titleMedium)
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = cart.isNotEmpty() && m.id != PayMethods.CREDIT && !checkingOut, onClick = {
-                            vm.checkout(m.id, null) { onMessage("فروش ثبت شد ✓ (${m.name})") }
-                            v.heard = null
-                        }, modifier = Modifier.weight(1f)) { Text("ثبت فروش") }
-                        OutlinedButton(onClick = mic) { Text("دوباره") }
+                    val total = (subtotal - vm.discount.value).coerceAtLeast(0)
+                    if (m.id == PayMethods.CREDIT) {
+                        val creditOn = methods.any { it.id == PayMethods.CREDIT && it.enabled }
+                        val who = VoiceAssistant.customer(cmd.customer, customers, learned)
+                        val chosen = pickedCustomer ?: who.customer
+                        when {
+                            cart.isEmpty() -> Text("فاکتور خالی است")
+                            !creditOn -> Text("روش «نسیه» در تنظیمات روش‌های پرداخت خاموش است.")
+                            else -> Text(
+                                "ثبت نسیه " + Fmt.money(total, cur) + (chosen?.let { " به نام «${it.name}»" } ?: "") + "؟",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                        }
+                        if (chosen == null) Text(
+                            if (cmd.customer.isBlank()) "نام مشتری را بگویید («نسیه به نام رضایی») یا انتخاب کنید:" else "«${cmd.customer}» — منظورتان کدام مشتری است؟",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (who.choices.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(who.choices, key = { it.id }) { c ->
+                                FilterChip(chosen?.id == c.id, { pickedCustomer = c; learn(cmd.customer, c.id, customer = true) }, label = { Text(c.name) })
+                            }
+                        }
+                        if (cmd.customer.isNotBlank() && chosen == null) OutlinedButton(onClick = {
+                            vm.addCustomer(cmd.customer.trim(), "") { c -> pickedCustomer = c }
+                        }) { Text("ثبت مشتری جدید «${cmd.customer}»") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(enabled = cart.isNotEmpty() && creditOn && chosen != null && !checkingOut, onClick = {
+                                val c = chosen!!
+                                vm.checkout(PayMethods.CREDIT, c.id, viaVoice = true) {
+                                    onMessage("نسیه ثبت شد ✓ (${c.name})"); say("نسیه " + c.name + " ثبت شد. " + Spoken.money(it.total, cur))
+                                }
+                                v.heard = null
+                            }, modifier = Modifier.weight(1f)) { Text("ثبت نسیه") }
+                            again()
+                        }
+                    } else {
+                        if (cart.isEmpty()) Text("فاکتور خالی است")
+                        else Text("ثبت فاکتور " + Fmt.money(total, cur) + " با «" + m.name + "»؟", style = MaterialTheme.typography.titleMedium)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(enabled = cart.isNotEmpty() && !checkingOut, onClick = {
+                                vm.checkout(m.id, null, viaVoice = true) {
+                                    onMessage("فروش ثبت شد ✓ (${m.name})"); say("فروش " + Spoken.money(it.total, cur) + " ثبت شد")
+                                }
+                                v.heard = null
+                            }, modifier = Modifier.weight(1f)) { Text("ثبت فروش") }
+                            again()
+                        }
                     }
                 }
                 Cmd.Clear -> {
                     Text("همهٔ اقلام فاکتور پاک شود؟")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = cart.isNotEmpty(), onClick = { vm.clearCart(); done("فاکتور خالی شد") }, modifier = Modifier.weight(1f)) { Text("پاک کردن") }
-                        OutlinedButton(onClick = mic) { Text("دوباره") }
+                        Button(enabled = cart.isNotEmpty(), onClick = {
+                            vm.rememberVoiceUndo("پاک کردن فاکتور")
+                            vm.clearCart(); done("فاکتور خالی شد", "فاکتور خالی شد")
+                        }, modifier = Modifier.weight(1f)) { Text("پاک کردن") }
+                        again()
+                    }
+                }
+                Cmd.Undo -> {
+                    val u = undo
+                    if (u == null) Text("کار صوتی‌ای برای برگرداندن نیست.")
+                    else {
+                        Text("برگرداندن «${u.label}»؟", style = MaterialTheme.typography.titleMedium)
+                        if (u.saleId != null) Text(
+                            "فاکتور ثبت‌شده باطل می‌شود (موجودی برمی‌گردد) و اقلامش دوباره در فاکتور قرار می‌گیرند.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(enabled = u != null, onClick = { vm.undoVoice()?.let { done("«$it» برگردانده شد", "برگردانده شد") } }, modifier = Modifier.weight(1f)) {
+                            Text("برگرداندن")
+                        }
+                        again()
+                    }
+                }
+                is Cmd.Query -> {
+                    QueryAnswer(cmd, allProducts, learned, picks, debtors, cheques, today, cur, onLearn = { s, id -> learn(s, id) }, say = ::say)
+                    Button(onClick = mic, modifier = Modifier.fillMaxWidth()) { Text("سؤال یا دستور بعدی") }
+                }
+                is Cmd.Purchase -> {
+                    if (salesOnly) {
+                        Text("این گوشی «فقط فروش» است؛ خرید را روی گوشی اصلی ثبت کنید.", color = MaterialTheme.colorScheme.error)
+                    } else {
+                        val base = VoiceAssistant.line(cmd.item, allProducts, learned)
+                        val l0 = picks[0]?.let { VoiceAssistant.resolve(cmd.item, it, base.choices, null) } ?: base
+                        val l = qtyEdit[0]?.let { l0.copy(qty = it) } ?: l0
+                        PlanRow(l, cur, onPick = { picks[0] = it; learn(cmd.item.query, it.id) }, onQty = { qtyEdit[0] = it })
+                        val plan = l.product?.let { p -> purchasePlan(p, l, cmd, cur) }
+                        if (plan != null) {
+                            val p = l.product!!
+                            SumRow("قیمت خرید هر " + (if (p.isWeight) "کیلو" else if (p.isVolume) "لیتر" else "عدد"), Fmt.money(plan.newBuy, cur))
+                            if (l.box) SumRow("هر باکس", Fmt.money(plan.boxBuy ?: 0, cur))
+                            SumRow("جمع خرید", Fmt.money(plan.total, cur), MaterialTheme.colorScheme.primary)
+                            if (cmd.price == null) Text("قیمت گفته نشد؛ آخرین قیمت خرید در نظر گرفته شد.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn)
+                            if (p.sellPrice > 0 && plan.newBuy > p.sellPrice) Text("قیمت خرید از قیمت فروش (" + Fmt.money(p.sellPrice, cur) + ") بیشتر است!", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            Text("پرداخت نقدی ثبت می‌شود؛ برای خرید چکی از «خرید جدید» در صفحهٔ کالا استفاده کنید.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(enabled = plan != null && plan.qtyBase > 0, onClick = {
+                                val p = l.product!!
+                                vm.restock(p.id, plan!!.qtyBase, plan.unitCost, plan.newBuy, null, plan.boxBuy, null, "") {
+                                    onMessage("خرید «${p.name}» ثبت شد ✓"); say("خرید " + p.name + " ثبت شد. " + Spoken.money(plan.total, cur))
+                                }
+                                v.heard = null
+                            }, modifier = Modifier.weight(1f)) { Text("ثبت خرید") }
+                            again()
+                        }
                     }
                 }
                 else -> {
-                    Text("متوجه نشدم. نام کالا و تعداد را بگویید.", color = MaterialTheme.colorScheme.error)
+                    Text("متوجه نشدم. نام کالا و تعداد را بگویید، یا یک سؤال مثل «موجودی بهمن چنده؟»", color = MaterialTheme.colorScheme.error)
+                    LaunchedEffect(heard) { say("متوجه نشدم") }
                     Button(onClick = mic, modifier = Modifier.fillMaxWidth()) { Text("دوباره بگویید") }
                 }
             }
         }
     }
+}
+
+/** A purchase said by voice, converted to what the purchase record needs. [qtyBase] in pieces / grams / ml. */
+internal data class PurchasePlan(val qtyBase: Double, val unitCost: Double, val newBuy: Long, val boxBuy: Long?, val total: Long)
+
+internal fun purchasePlan(p: ProductWithStock, l: VoiceAssistant.Line, cmd: Cmd.Purchase, cur: Currency): PurchasePlan {
+    val size = p.boxSize.coerceAtLeast(1)
+    val qtyBase = if (l.box) l.qty * size else l.qty
+    val price = cmd.price?.let { toToman(it, cur).toDouble() }
+    val unitCost: Double = when {
+        price == null -> if (l.box && p.boxBuyPrice > 0) p.boxBuyPrice.toDouble() / size else p.baseCost
+        cmd.total -> if (qtyBase > 0) price / qtyBase else 0.0
+        l.box -> price / size
+        p.isMeasured -> price / 1000.0
+        else -> price
+    }
+    val newBuy = Math.round(if (p.isMeasured) unitCost * 1000 else unitCost)
+    return PurchasePlan(qtyBase, unitCost, newBuy, if (l.box) Math.round(unitCost * size) else null, Math.round(qtyBase * unitCost))
+}
+
+/** Answers a spoken question on screen and (when on) aloud. Nothing is changed. */
+@Composable
+private fun QueryAnswer(
+    cmd: Cmd.Query, products: List<ProductWithStock>, learned: Map<String, String>, picks: MutableMap<Int, ProductWithStock>,
+    debtors: List<CustomerDebt>, cheques: List<com.mozkhan.shop.data.Cheque>, today: com.mozkhan.shop.data.Totals, cur: Currency,
+    onLearn: (String, String) -> Unit, say: (String) -> Unit,
+) {
+    var shown: String? = null
+    var spoken: String? = null
+    when (cmd.ask) {
+        VoiceParser.Ask.STOCK, VoiceParser.Ask.PRICE -> {
+            val item = VoiceParser.Item(VoiceParser.tokens(cmd.query), null, null)
+            val base = VoiceAssistant.line(item, products, learned)
+            val p = picks[0] ?: base.product
+            if (p == null) {
+                Text(if (base.choices.isEmpty()) "کالایی شبیه «${cmd.query}» پیدا نشد" else "منظورتان کدام است؟", style = MaterialTheme.typography.bodyMedium)
+                if (base.choices.isEmpty()) spoken = "کالایی پیدا نشد"
+            } else if (cmd.ask == VoiceParser.Ask.STOCK) {
+                if (!p.trackStock) { shown = "«${p.name}» موجودی انبار ندارد (بدون شمارش)"; spoken = p.name + " بدون موجودی انبار است" }
+                else {
+                    val boxes = if (p.hasBox && p.stock >= p.boxSize) Fmt.digits(" (حدود ${(p.stock / p.boxSize).toInt()} باکس)") else ""
+                    shown = "موجودی «${p.name}»: " + Fmt.qtyOf(p.stock, p.unit) + boxes + (if (p.low) " — کم است!" else "")
+                    spoken = "موجودی " + p.name + "، " + Spoken.qty(p.stock.coerceAtLeast(0.0), p.unit) + (if (p.low) "، کم است" else "")
+                }
+            } else {
+                val per = if (p.isWeight) " هر کیلو" else if (p.isVolume) " هر لیتر" else ""
+                shown = "قیمت «${p.name}»:" + per + " " + Fmt.money(p.sellPrice, cur) + (if (p.hasBox) " • باکس " + Fmt.money(p.boxSellPrice, cur) else "")
+                spoken = p.name + per + "، " + Spoken.money(p.sellPrice, cur) + (if (p.hasBox) "، باکس " + Spoken.money(p.boxSellPrice, cur) else "")
+            }
+            val others = base.choices.filter { it.id != p?.id }
+            if (others.isNotEmpty()) LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(others, key = { it.id }) { c -> FilterChip(false, { picks[0] = c; onLearn(cmd.query, c.id) }, label = { Text(c.name) }) }
+            }
+        }
+        VoiceParser.Ask.TODAY -> {
+            val profit = today.revenue - today.cost
+            shown = "فروش امروز: " + Fmt.money(today.revenue, cur) + Fmt.digits(" در ${today.count} فاکتور") + " • سود " + Fmt.money(profit, cur)
+            spoken = "فروش امروز " + Spoken.money(today.revenue, cur) + "، در " + Spoken.number(today.count.toLong()) + " فاکتور. سود " + Spoken.money(profit, cur)
+        }
+        VoiceParser.Ask.CHEQUES -> {
+            val due = com.mozkhan.shop.util.Daily.dueCheques(cheques, 7)
+            if (due.isEmpty()) { shown = "تا ۷ روز آینده چکی سررسید ندارد ✓"; spoken = "تا هفت روز آینده چکی سررسید ندارد" }
+            else {
+                val sum = due.sumOf { it.first.amount }
+                shown = Fmt.digits("${due.size} چک تا ۷ روز آینده • جمع ") + Fmt.money(sum, cur) + "\n" +
+                    due.take(5).joinToString("\n") { (c, d) -> "• " + Fmt.money(c.amount, cur) + " — " + com.mozkhan.shop.util.Daily.whenText(d) + (if (c.payee.isNotBlank()) " — " + c.payee else "") }
+                spoken = Spoken.number(due.size.toLong()) + " چک تا هفت روز آینده، جمع " + Spoken.money(sum, cur) +
+                    ". اولی " + (if (due[0].second <= 0) "امروز" else Spoken.number(due[0].second.toLong()) + " روز دیگر")
+            }
+        }
+        VoiceParser.Ask.DEBT -> {
+            val m = VoiceParser.best(cmd.query, debtors, { it.customer.name }, min = 0.5)
+            val d = VoiceParser.sure(m) ?: m.firstOrNull()?.item
+            if (d == null) { shown = "مشتری‌ای به نام «${cmd.query}» پیدا نشد"; spoken = "مشتری پیدا نشد" }
+            else {
+                shown = "بدهی «${d.customer.name}»: " + Fmt.money(d.debt.coerceAtLeast(0), cur) + (if (d.debt <= 0) " (تسویه است)" else "")
+                spoken = if (d.debt <= 0) d.customer.name + " بدهی ندارد" else "بدهی " + d.customer.name + "، " + Spoken.money(d.debt, cur)
+            }
+        }
+    }
+    shown?.let {
+        Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)).padding(14.dp)) {
+            Text(it, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+    }
+    LaunchedEffect(spoken) { spoken?.let(say) }
 }
 
 @Composable
@@ -326,7 +548,7 @@ private fun PlanRow(l: VoiceAssistant.Line, cur: Currency, onPick: (ProductWithS
             l.warning?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn) }
             val others = l.choices.filter { it.id != p?.id }
             if (others.isNotEmpty()) {
-                Text(if (p == null) "منظورتان کدام است؟" else "یا:", style = MaterialTheme.typography.labelMedium)
+                Text(if (p == null) "منظورتان کدام است؟ (یاد می‌گیرم)" else "یا:", style = MaterialTheme.typography.labelMedium)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(others, key = { it.id }) { c -> FilterChip(false, { onPick(c) }, label = { Text(c.name) }) }
                 }
