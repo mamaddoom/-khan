@@ -94,6 +94,8 @@ data class StockDoc(
     @ColumnInfo(defaultValue = "0") val counted: Boolean = false,
     /** purchases paid by cheque: the cheque (see [Cheque]); null = cash / unknown */
     val chequeId: String? = null,
+    /** exits counted as a loss: the value is taken at BUY price, SELL price, or a MANUAL amount (stored in [cost]) */
+    @ColumnInfo(defaultValue = "BUY") val priceBasis: String = "BUY",
 )
 
 @Entity(tableName = "sales",indices = [Index("ts"), Index("customerId")])

@@ -531,8 +531,11 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------ stock exit documents
     val docs: StateFlow<List<StockDoc>> = repo.docs.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    fun createExit(kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, counted: Boolean, onDone: () -> Unit) = launch {
-        repo.createExit(kind, note, lines, counted); fb.success(); onDone()
+    fun createExit(
+        kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, counted: Boolean, basis: String = "BUY", manual: Long = 0,
+        onDone: () -> Unit,
+    ) = launch {
+        repo.createExit(kind, note, lines, counted, basis, manual); fb.success(); onDone()
     }
 
     // ------------------------------------------------------------------ credit

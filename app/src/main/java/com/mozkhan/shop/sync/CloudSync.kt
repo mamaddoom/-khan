@@ -782,10 +782,10 @@ internal fun StockMove.toMap(): Map<String, Any?> = mapOf(
 internal fun Map<String, Any?>.toMove() = StockMove(s("id"), s("productId"), dbl("qty"), s("reason"), sn("refId"), l("ts"), dbl("unitCost")).also { require(it.id.isNotEmpty()) }
 
 internal fun StockDoc.toMap(): Map<String, Any?> = mapOf(
-    "id" to id, "ts" to ts, "kind" to kind, "note" to note, "cost" to cost, "voided" to voided, "updatedAt" to updatedAt, "counted" to counted, "chequeId" to chequeId,
+    "id" to id, "ts" to ts, "kind" to kind, "note" to note, "cost" to cost, "voided" to voided, "updatedAt" to updatedAt, "counted" to counted, "chequeId" to chequeId, "priceBasis" to priceBasis,
 )
 
-internal fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s("note"), l("cost"), b("voided"), l("updatedAt", l("ts")), b("counted"), (this["chequeId"] as? String)?.ifBlank { null }).also { require(it.id.isNotEmpty()) }
+internal fun Map<String, Any?>.toDoc() = StockDoc(s("id"), l("ts"), s("kind"), s("note"), l("cost"), b("voided"), l("updatedAt", l("ts")), b("counted"), (this["chequeId"] as? String)?.ifBlank { null }, s("priceBasis").ifBlank { "BUY" }).also { require(it.id.isNotEmpty()) }
 
 internal fun Sale.toMap(): Map<String, Any?> = mapOf(
     "id" to id, "ts" to ts, "subtotal" to subtotal, "discount" to discount, "total" to total, "cost" to cost,

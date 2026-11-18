@@ -9,6 +9,7 @@ import com.mozkhan.shop.data.MIGRATION_4_5
 import com.mozkhan.shop.data.MIGRATION_5_6
 import com.mozkhan.shop.data.MIGRATION_6_7
 import com.mozkhan.shop.data.MIGRATION_7_8
+import com.mozkhan.shop.data.MIGRATION_8_9
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -153,9 +154,18 @@ class MigrationTest {
     }
 
     @Test
+    fun migrate8To9_exitsValuedAtBuyPrice() {
+        val db = helper.createDatabase("mig89.db", 8)
+        db.execSQL("INSERT INTO stock_docs (id,ts,kind,note,cost,voided,updatedAt,counted,chequeId) VALUES ('d1',10,'DAMAGE','x',5000,0,10,1,NULL)")
+        db.close()
+        val m = helper.runMigrationsAndValidate("mig89.db", 9, true, MIGRATION_8_9)
+        m.query("SELECT priceBasis, cost FROM stock_docs WHERE id='d1'").use { c -> c.moveToFirst(); assertEquals("BUY", c.getString(0)); assertEquals(5000L, c.getLong(1)) }
+    }
+
+    @Test
     fun versionConstantMatchesDatabase() {
         // AppDb.VERSION drives the pre-migration safety copy: it must follow the @Database version
-        assertEquals(8, AppDb.VERSION)
+        assertEquals(9, AppDb.VERSION)
     }
 
     @Test

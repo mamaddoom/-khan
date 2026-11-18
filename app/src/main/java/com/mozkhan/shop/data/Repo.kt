@@ -401,12 +401,16 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
     val docs = db.stock().observeDocs()
 
     /** Takes goods out of the warehouse without a sale. qty = base units. Counted as a loss, never as revenue. */
-    suspend fun createExit(kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, counted: Boolean = false): StockDoc {
+    suspend fun createExit(
+        kind: String, note: String, lines: List<Pair<ProductWithStock, Double>>, counted: Boolean = false,
+        basis: String = "BUY", manual: Long = 0,
+    ): StockDoc {
         require(lines.isNotEmpty()) { "کالایی انتخاب نشده" }
         val now = System.currentTimeMillis()
         val docId = newId()
-        val cost = lines.sumOf { (p, q) -> Math.round(q * p.baseCost) }
-        val doc = StockDoc(docId, now, kind, note.trim(), cost, updatedAt = now, counted = counted)
+        val b = if (counted) basis else "BUY"
+        val cost = exitValue(lines, b, manual)
+        val doc = StockDoc(docId, now, kind, note.trim(), cost, updatedAt = now, counted = counted, priceBasis = b)
         val moves = lines.filter { it.first.trackStock && it.second > 0 }
             .map { (p, q) -> StockMove(newId(), p.id, -q, "EXIT", docId, now, p.baseCost) }
         db.withTransaction {
@@ -416,6 +420,20 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         }
         return doc
     }
+
+    /**
+     * The goods of an exit document as printable lines (for sharing the document): each line priced at the
+     * document's basis (sell price for SELL, otherwise the buy cost recorded with the move).
+     */
+    suspend fun exitItems(d: StockDoc): List<SaleItem> =
+        db.stock().movesOf(d.id).filter { it.reason == "EXIT" && it.qty < 0 }.map { m ->
+            val p = db.products().raw(m.productId)
+            val measured = p != null && p.unit != Measure.PIECE
+            val sell = p?.let { if (measured) it.sellPrice / 1000.0 else it.sellPrice.toDouble() } ?: 0.0
+            val buy = if (m.unitCost > 0) m.unitCost else p?.let { if (measured) it.buyPrice / 1000.0 else it.buyPrice.toDouble() } ?: 0.0
+            val unit = if (d.priceBasis == "SELL") sell else buy
+            SaleItem(m.id, d.id, m.productId, p?.name ?: "؟", -m.qty, p?.unit == Measure.WEIGHT, unit, buy, p?.category.orEmpty())
+        }
 
     suspend fun exitLines(docId: String): List<Pair<String, Double>> =
         db.stock().movesOf(docId).filter { it.reason == "EXIT" && it.qty < 0 }.map { m -> (db.products().raw(m.productId)?.name ?: "؟") to -m.qty }
@@ -505,7 +523,7 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         o.put("docs", JSONArray().apply {
             db.stock().allDocs().forEach {
                 put(JSONObject().put("id", it.id).put("ts", it.ts).put("kind", it.kind).put("note", it.note).put("cost", it.cost)
-                    .put("voided", it.voided).put("updatedAt", it.updatedAt).put("counted", it.counted).put("chequeId", it.chequeId ?: JSONObject.NULL))
+                    .put("voided", it.voided).put("updatedAt", it.updatedAt).put("counted", it.counted).put("chequeId", it.chequeId ?: JSONObject.NULL).put("priceBasis", it.priceBasis))
             }
         })
         o.put("sales", JSONArray().apply {
@@ -641,7 +659,7 @@ object BackupParser {
             StockMove(it.getString("id"), it.getString("productId"), it.getDouble("qty"), it.getString("reason"), it.str("refId"), it.ts(), it.optDouble("unitCost", 0.0))
         }
         val docs = arr("docs").map {
-            StockDoc(it.getString("id"), it.ts(), it.getString("kind"), it.optString("note", ""), it.optLong("cost"), it.optBoolean("voided"), it.upd(), it.optBoolean("counted"), it.str("chequeId"))
+            StockDoc(it.getString("id"), it.ts(), it.getString("kind"), it.optString("note", ""), it.optLong("cost"), it.optBoolean("voided"), it.upd(), it.optBoolean("counted"), it.str("chequeId"), it.optString("priceBasis", "BUY"))
         }
         val sales = arr("sales").map {
             Sale(it.getString("id"), it.ts(), it.optLong("subtotal"), it.optLong("discount"), it.optLong("total"),
@@ -672,4 +690,14 @@ object BackupParser {
         }
         return Backup(products, moves, docs, sales, items, expenses, customers, payments, recipes, cheques, closes)
     }
+}
+
+/**
+ * Value of the goods of an exit document: at BUY price (default), at SELL price, or a MANUAL amount typed by the user.
+ * Only exits marked "counted" lower the profit; the stock moves always keep the buy cost.
+ */
+fun exitValue(lines: List<Pair<ProductWithStock, Double>>, basis: String, manual: Long): Long = when (basis) {
+    "SELL" -> lines.sumOf { (p, q) -> Math.round(q * p.baseSell) }
+    "MANUAL" -> manual.coerceAtLeast(0)
+    else -> lines.sumOf { (p, q) -> Math.round(q * p.baseCost) }
 }
