@@ -11,7 +11,6 @@ import com.mozkhan.shop.util.Currency
 import com.mozkhan.shop.util.Daily
 import com.mozkhan.shop.util.Jalali
 import com.mozkhan.shop.util.Prices
-import com.mozkhan.shop.voice.Spoken
 import com.mozkhan.shop.voice.VoiceAssistant
 import com.mozkhan.shop.voice.VoiceParser
 import com.mozkhan.shop.voice.VoiceParser.Ask
@@ -111,23 +110,6 @@ class AssistantV2Test {
         assertEquals(5.0, n.qtyBase, 0.0); assertEquals(90_000L, n.newBuy); assertEquals(450_000L, n.total)
     }
 
-    // ---------------------------------------------------------------- spoken numbers
-    @Test fun spokenNumbers() {
-        assertEquals("صفر", Spoken.number(0))
-        assertEquals("بیست و پنج", Spoken.number(25))
-        assertEquals("صد و بیست هزار", Spoken.number(120_000))
-        assertEquals("یک میلیون و دویست و پنجاه هزار", Spoken.number(1_250_000))
-        assertEquals("هزار و پانصد", Spoken.number(1500))
-        assertEquals("سه هزار و چهارصد و پنج", Spoken.number(3405))
-        assertEquals("یک و نیم کیلو", Spoken.qty(1500.0, Measure.WEIGHT))
-        assertEquals("دوازده عدد", Spoken.qty(12.0, Measure.PIECE))
-        assertEquals("صد و بیست هزار تومان", Spoken.money(120_000, Currency.TOMAN))
-        // every spoken number is understood back by the parser
-        for (n in listOf(7L, 19L, 105L, 999L, 12_345L, 250_000L, 3_200_000L)) {
-            assertEquals(n.toDouble(), VoiceParser.number(VoiceParser.tokens(Spoken.number(n)), 0)!!.first, 0.0)
-        }
-    }
-
     // ---------------------------------------------------------------- price preview = what is applied
     @Test fun groupPriceChange() {
         assertEquals(115_000L, Prices.change(100_000, 15.0, null))
@@ -178,17 +160,8 @@ class DefineEditsTest {
     }
 }
 
-/** v2.1.1: English spoken answers and release notes */
+/** release notes shown before installing */
 class EnglishAndNotesTest {
-    @Test fun englishAnswers() {
-        assertEquals("120,000 toman", Spoken.En.money(120_000, Currency.TOMAN))
-        assertEquals("1,200,000 rials", Spoken.En.money(120_000, Currency.RIAL))
-        assertEquals("1.5 kilos", Spoken.En.qty(1500.0, Measure.WEIGHT))
-        assertEquals("250 grams", Spoken.En.qty(250.0, Measure.WEIGHT))
-        assertEquals("1 piece", Spoken.En.qty(1.0, Measure.PIECE))
-        assertEquals("12 pieces", Spoken.En.qty(12.0, Measure.PIECE))
-    }
-
     @Test fun releaseNotesBetweenMarkers() {
         val body = "MozKhan 2.1.1\r\n\r\n<!-- notes -->\r\n• یک\n• دو\n<!-- /notes -->\n\nversionCode=1"
         assertEquals("• یک\n• دو", com.mozkhan.shop.util.Updater.releaseNotes(body))
