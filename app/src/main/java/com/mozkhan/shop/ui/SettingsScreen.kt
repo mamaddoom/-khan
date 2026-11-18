@@ -190,10 +190,7 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
             val ttsSt by com.mozkhan.shop.voice.VoiceSpeaker.status.collectAsState()
             LaunchedEffect(Unit) { com.mozkhan.shop.voice.VoiceSpeaker.init(ctx) }
             SwitchRow("پاسخ صوتی (خواندن جواب و نتیجه)", speak, prefs::setVoiceSpeak)
-            if (speak && ttsSt == com.mozkhan.shop.voice.VoiceSpeaker.Status.NO_PERSIAN) {
-                Text("صدای فارسی روی موتور گفتار این گوشی نصب نیست.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn)
-                OutlinedButton(onClick = { runCatching { ctx.startActivity(com.mozkhan.shop.voice.VoiceSpeaker.installIntent()) } }) { Text("نصب صدای فارسی") }
-            }
+            if (speak) PersianVoiceCard()
             if (speak && ttsSt == com.mozkhan.shop.voice.VoiceSpeaker.Status.READY) OutlinedButton(onClick = {
                 com.mozkhan.shop.voice.VoiceSpeaker.speak(ctx, "سلام. فروش امروز " + com.mozkhan.shop.voice.Spoken.money(vm.todayTotals.value.revenue, cur), true)
             }) { Text("آزمایش صدا") }

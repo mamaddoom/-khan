@@ -168,6 +168,61 @@ fun VoiceModelCard(compact: Boolean = false) {
     }
 }
 
+// ===================================================================== Persian voice for spoken answers
+/**
+ * Most phones have no Persian text-to-speech. This card finds one among the installed engines, or downloads the free
+ * offline Persian engine (sherpa-onnx, «امیر» voice) and opens the installer. Coming back to the app checks again.
+ */
+@Composable
+fun PersianVoiceCard() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val st by VoiceSpeaker.status.collectAsState()
+    val dl by VoiceSpeaker.download.collectAsState()
+    var msg by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { VoiceSpeaker.init(ctx) }
+    // returning from the installer: look for the new engine
+    val owner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e ->
+            if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME && VoiceSpeaker.status.value != VoiceSpeaker.Status.READY && VoiceSpeaker.download.value.file != null) {
+                VoiceSpeaker.reset(ctx)
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    LaunchedEffect(st) { if (st == VoiceSpeaker.Status.READY && dl.file != null) VoiceSpeaker.cleanup(ctx) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        when (st) {
+            VoiceSpeaker.Status.READY -> Text("صدای فارسی آماده است ✓", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.profit)
+            VoiceSpeaker.Status.UNKNOWN -> Text("در حال بررسی صدای فارسی گوشی…", style = MaterialTheme.typography.bodySmall)
+            else -> {
+                Text(
+                    "این گوشی صدای فارسی ندارد. صدای فارسی رایگان و آفلاین (sherpa-onnx، صدای «امیر») را یک بار دانلود و نصب کنید؛ " +
+                        "بعد از نصب به برنامه برگردید تا خودکار پیدا شود.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn,
+                )
+                if (dl.running) {
+                    Text("در حال دانلود… " + Fmt.digits("${(dl.progress * 100).toInt()}٪"), style = MaterialTheme.typography.bodySmall)
+                    LinearProgressIndicator(progress = { dl.progress }, modifier = Modifier.fillMaxWidth())
+                } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (dl.file != null) {
+                        Button(onClick = { msg = VoiceSpeaker.installEngine(ctx) }, modifier = Modifier.weight(1f)) { Text("نصب صدای فارسی") }
+                        OutlinedButton(onClick = { VoiceSpeaker.reset(ctx) }) { Text("بررسی دوباره") }
+                    } else {
+                        Button(onClick = { scope.launch { msg = VoiceSpeaker.downloadEngine(ctx) } }, modifier = Modifier.weight(1f)) {
+                            Text("دانلود صدای فارسی (" + Fmt.digits("${VoiceSpeaker.ENGINE_MB}") + " مگابایت)")
+                        }
+                        OutlinedButton(onClick = { VoiceSpeaker.reset(ctx) }) { Text("بررسی دوباره") }
+                    }
+                }
+                (msg ?: dl.error)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+}
+
 // ===================================================================== big mic with live text
 @Composable
 private fun MicPanel(v: VoiceListen, hint: String, onMic: () -> Unit) {
@@ -255,6 +310,11 @@ fun VoiceSellSheet(vm: MainVm, onDismiss: () -> Unit, onMessage: (String) -> Uni
         ) {
             Text("دستیار صوتی فروشگاه", style = MaterialTheme.typography.titleLarge)
             if (!ready) { VoiceModelCard(compact = true); return@Column }
+            val ttsSt by VoiceSpeaker.status.collectAsState()
+            if (speakOn && ttsSt == VoiceSpeaker.Status.NO_PERSIAN) Text(
+                "برای شنیدن جواب‌ها، صدای فارسی را از «تنظیمات ← دستیار صوتی» نصب کنید (یک بار، آفلاین).",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.extra.warn,
+            )
 
             if (heard == null || v.listening) {
                 MicPanel(v, SELL_HINT, mic)
@@ -561,10 +621,16 @@ private fun PlanRow(l: VoiceAssistant.Line, cur: Currency, onPick: (ProductWithS
 /** words that end a dictation ("…موجودی پنجاه، تمام") */
 private val DEFINE_STOP = setOf("تمام", "تموم", "تایید", "کافیه", "کافی", "بسه")
 
+/** The fields of the dialog. Money in TOMAN, amounts as typed text. */
+private data class DefFields(
+    val name: String = "", val buy: Long = 0, val sell: Long = 0, val stock: String = "", val min: String = "", val cat: String = "",
+)
+
 /**
  * Dictation of "نام … قیمت خرید … فروش … موجودی … دسته …". Pauses do NOT end it: it keeps listening (up to 2 minutes)
- * and fills the fields live, until «تمام شد» is tapped or "تمام / تأیید" is said. The dialog only closes with
- * «تأیید» or «انصراف» (a tap outside does nothing), and «ادامه» adds more to what was already said.
+ * and fills the fields live, until «تمام شد» is tapped or "تمام / تأیید" is said. While speaking, "پاک کن" / "برگردون"
+ * removes the last part said and "همه رو پاک کن" starts over. Every field can also be corrected by hand: a field typed
+ * by hand is never overwritten by what is heard afterwards. The dialog only closes with «تأیید» or «انصراف».
  */
 @Composable
 fun VoiceDefineDialog(cur: Currency, onDismiss: () -> Unit, onApply: (VoiceParser.Definition) -> Unit) {
@@ -582,13 +648,41 @@ fun VoiceDefineDialog(cur: Currency, onDismiss: () -> Unit, onApply: (VoiceParse
     var appending by remember { mutableStateOf(false) }
     var applyWhenDone by remember { mutableStateOf(false) }
     LaunchedEffect(v.heard) {
-        v.heard?.let { h -> said = if (appending) (said + " " + h.text).trim() else h.text; appending = false }
+        v.heard?.let { h -> said = VoiceParser.applyEdits(if (appending) "$said ${h.text}" else h.text); appending = false }
     }
-    val live = if (v.listening) (if (appending) "$said ${v.partial}" else v.partial).trim() else said
+    val live = if (v.listening) VoiceParser.applyEdits(if (appending) "$said ${v.partial}" else v.partial) else said
     val d = remember(live) { if (live.isBlank()) null else VoiceParser.parseDefinition(live) }
-    val usable = d != null && (d.name.isNotBlank() || d.buy != null || d.sell != null)
 
-    fun apply() { if (d != null) { onApply(d); onDismiss() } }
+    // what is shown / applied: heard values, except fields corrected by hand
+    var f by remember { mutableStateOf(DefFields()) }
+    val touched = remember { mutableStateMapOf<String, Boolean>() }
+    fun toman(x: Double?, rial: Boolean): Long = x?.let { Math.round(if (rial) it / 10 else it / cur.factor) } ?: 0
+    LaunchedEffect(d) {
+        val h = d
+        f = DefFields(
+            name = if (touched["name"] == true) f.name else h?.name.orEmpty(),
+            buy = if (touched["buy"] == true) f.buy else toman(h?.buy, h?.rial == true),
+            sell = if (touched["sell"] == true) f.sell else toman(h?.sell, h?.rial == true),
+            stock = if (touched["stock"] == true) f.stock else h?.stock?.let { plain(it) }.orEmpty(),
+            min = if (touched["min"] == true) f.min else h?.minStock?.let { plain(it) }.orEmpty(),
+            cat = if (touched["cat"] == true) f.cat else h?.category.orEmpty(),
+        )
+    }
+    val usable = f.name.isNotBlank() || f.buy > 0 || f.sell > 0
+
+    fun apply() {
+        if (!usable) return
+        onApply(
+            VoiceParser.Definition(
+                f.name.trim(),
+                f.buy.takeIf { it > 0 }?.let { it.toDouble() * cur.factor },
+                f.sell.takeIf { it > 0 }?.let { it.toDouble() * cur.factor },
+                f.stock.toDoubleOrNull(), f.min.toDoubleOrNull(), f.cat.trim().ifBlank { null },
+                rial = false,
+            ),
+        )
+        onDismiss()
+    }
     // «تأیید» while still listening: finish the dictation first, then apply what was understood
     LaunchedEffect(v.listening, said) { if (applyWhenDone && !v.listening) { applyWhenDone = false; apply() } }
 
@@ -601,16 +695,17 @@ fun VoiceDefineDialog(cur: Currency, onDismiss: () -> Unit, onApply: (VoiceParse
                 if (!ready) { VoiceModelCard(compact = true); return@Column }
                 MicPanel(
                     v,
-                    if (said.isBlank()) "بگویید: «بهمن کوچک، قیمت خرید نود هزار، فروش صد هزار، موجودی پنجاه، دسته سیگار» و در آخر «تمام»"
-                    else "برای اضافه کردن «ادامه» را بزنید",
+                    if (said.isBlank()) "بگویید: «بهمن کوچک، قیمت خرید نود هزار، فروش صد هزار، موجودی پنجاه، دسته سیگار» و در آخر «تمام». " +
+                        "اشتباه شد؟ بگویید «پاک کن» یا «برگردون»."
+                    else "برای اضافه کردن «ادامه» را بزنید؛ هر خانه را هم می‌توانید با دست درست کنید",
                     onMic = { appending = said.isNotBlank(); mic() },
                 )
                 if (v.listening) {
                     OutlinedButton(onClick = { v.stop() }, modifier = Modifier.fillMaxWidth()) { Text("تمام شد") }
                 }
-                if (d != null) DefinitionCard(d, cur)
-                if (d != null && !v.listening) Text(
-                    "فقط بخش‌هایی که گفته شده در فرم پر می‌شوند؛ بعد می‌توانید ویرایش کنید.",
+                if (d != null || touched.isNotEmpty()) DefinitionEditor(f, cur, onChange = { key, nf -> touched[key] = true; f = nf })
+                if (!v.listening && (d != null || touched.isNotEmpty())) Text(
+                    "خانه‌ای که با دست عوض کنید دیگر با صدا تغییر نمی‌کند. فقط خانه‌های پر در فرم کالا نوشته می‌شوند.",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -624,7 +719,7 @@ fun VoiceDefineDialog(cur: Currency, onDismiss: () -> Unit, onApply: (VoiceParse
             Row {
                 if (ready && !v.listening && said.isNotBlank()) {
                     TextButton(onClick = { appending = true; mic() }) { Text("ادامه") }
-                    TextButton(onClick = { said = ""; appending = false; mic() }) { Text("از اول") }
+                    TextButton(onClick = { said = ""; appending = false; touched.clear(); f = DefFields(); mic() }) { Text("از اول") }
                 }
                 TextButton(onClick = { v.stop(); onDismiss() }) { Text("انصراف") }
             }
@@ -632,18 +727,24 @@ fun VoiceDefineDialog(cur: Currency, onDismiss: () -> Unit, onApply: (VoiceParse
     )
 }
 
+/** The heard values as editable fields (each one can be fixed or cleared by hand). */
 @Composable
-private fun DefinitionCard(d: VoiceParser.Definition, cur: Currency) {
-    fun money(x: Double?) = x?.let { Fmt.money(Math.round(if (d.rial) it / 10 else it / cur.factor), cur) } ?: "—"
-    Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)).padding(12.dp)) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SumRow("نام", d.name.ifBlank { "—" })
-            SumRow("قیمت خرید", money(d.buy))
-            SumRow("قیمت فروش", money(d.sell))
-            SumRow("موجودی", d.stock?.let { Fmt.digits(plain(it)) } ?: "—")
-            if (d.minStock != null) SumRow("حداقل موجودی", Fmt.digits(plain(d.minStock)))
-            SumRow("دسته", d.category ?: "—")
+private fun DefinitionEditor(f: DefFields, cur: Currency, onChange: (String, DefFields) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)).padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        AppField(f.name, { onChange("name", f.copy(name = it)) }, "نام کالا", Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MoneyField("قیمت خرید", f.buy, cur, { onChange("buy", f.copy(buy = it)) }, Modifier.weight(1f), suffix = false)
+            MoneyField("قیمت فروش", f.sell, cur, { onChange("sell", f.copy(sell = it)) }, Modifier.weight(1f), suffix = false)
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            NumberField("موجودی", f.stock, { onChange("stock", f.copy(stock = it)) }, Modifier.weight(1f))
+            NumberField("حداقل", f.min, { onChange("min", f.copy(min = it)) }, Modifier.weight(1f))
+        }
+        AppField(f.cat, { onChange("cat", f.copy(cat = it)) }, "دسته", Modifier.fillMaxWidth())
+        Text("قیمت‌ها به " + cur.fa, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

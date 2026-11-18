@@ -273,8 +273,45 @@ object VoiceParser {
     private val keyCat = setOf("دسته", "دسته‌بندی", "دستهبندی", "گروه")
     private val defFiller = setOf("قیمت", "کالا", "کالای", "محصول", "جدید", "تعریف", "اسم", "نام", "به", "تومان", "تومن", "ریال", "قیمتش", "با")
 
-    fun parseDefinition(text: String): Definition {
+    private val eraseOne = setOf("برگردون", "برگردان", "برگرد", "اشتباه", "اشتباهه", "غلط", "غلطه")
+    private val eraseVerbs = setOf("پاک", "حذف", "پاکش", "حذفش")
+    private val fieldKeys get() = keyBuy + keySell + keyStock + keyMin + keyCat + setOf("قیمت")
+
+    /**
+     * Applies spoken corrections inside a dictation: "پاک کن" / "حذف کن" / "برگردون" removes the last part said
+     * (from the last field word: "… فروش صد هزار، پاک کن" drops "فروش صد هزار"; with no field word yet, the name),
+     * "همه رو پاک کن" / "از اول" clears everything said before.
+     */
+    fun applyEdits(text: String): String {
         val t = tokens(text)
+        val out = ArrayList<String>()
+        var i = 0
+        fun eraseLast() {
+            var k = out.indexOfLast { it in fieldKeys }
+            // "قیمت خرید" / "قیمت فروش": the whole label goes
+            if (k > 0 && out[k - 1] == "قیمت") k--
+            if (k < 0) out.clear() else while (out.size > k) out.removeAt(out.size - 1)
+        }
+        while (i < t.size) {
+            val w = t[i]
+            val next = t.getOrNull(i + 1)
+            when {
+                // "همه رو پاک کن" / "همش رو پاک کن" / "از اول"
+                (w == "همه" || w == "همش" || w == "همشو") && (1..3).any { d -> t.getOrNull(i + d) in eraseVerbs } -> {
+                    out.clear(); i += (1..3).first { d -> t.getOrNull(i + d) in eraseVerbs } + 1
+                    if (t.getOrNull(i) in setOf("کن", "بکن")) i++
+                }
+                w == "از" && next == "اول" -> { out.clear(); i += 2 }
+                w in eraseVerbs && next in setOf("کن", "بکن", "شه") -> { eraseLast(); i += 2 }
+                w in eraseOne -> { eraseLast(); i++; if (t.getOrNull(i) == "کن") i++ }
+                else -> { out += w; i++ }
+            }
+        }
+        return out.joinToString(" ")
+    }
+
+    fun parseDefinition(text: String): Definition {
+        val t = tokens(applyEdits(text))
         val name = ArrayList<String>()
         val cat = ArrayList<String>()
         var buy: Double? = null; var sell: Double? = null; var stock: Double? = null; var min: Double? = null
