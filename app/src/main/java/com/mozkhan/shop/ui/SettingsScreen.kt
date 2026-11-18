@@ -186,39 +186,6 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             VoiceModelCard()
-            val speak by prefs.voiceSpeak.collectAsState()
-            val ttsSt by com.mozkhan.shop.voice.VoiceSpeaker.status.collectAsState()
-            LaunchedEffect(Unit) { com.mozkhan.shop.voice.VoiceSpeaker.init(ctx) }
-            SwitchRow("پاسخ صوتی (خواندن جواب و نتیجه)", speak, prefs::setVoiceSpeak)
-            val lang by prefs.voiceLang.collectAsState()
-            if (speak) {
-                Text("زبان پاسخ صوتی", style = MaterialTheme.typography.labelLarge)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(listOf("auto" to "خودکار", "en" to "انگلیسی (آفلاین)", "fa" to "فارسی")) { (v, label) ->
-                        FilterChip(lang == v, { prefs.setVoiceLang(v) }, label = { Text(label) })
-                    }
-                }
-                Text(
-                    when (lang) {
-                        "en" -> "جواب‌ها با صدای انگلیسی خود گوشی خوانده می‌شود (بدون اینترنت، روی تقریباً همهٔ گوشی‌ها). نام کالاها خوانده نمی‌شود؛ روی صفحه هست."
-                        "fa" -> "فقط فارسی: اگر صدای فارسی روی گوشی نباشد، چیزی خوانده نمی‌شود."
-                        else -> "اگر خود گوشی صدای فارسی داشته باشد فارسی، وگرنه انگلیسی آفلاین."
-                    },
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (lang == "fa") PersianVoiceCard()
-                OutlinedButton(onClick = {
-                    val rev = vm.todayTotals.value.revenue
-                    com.mozkhan.shop.voice.VoiceSpeaker.speak(
-                        ctx, "سلام. فروش امروز " + com.mozkhan.shop.voice.Spoken.money(rev, cur),
-                        "Hello. Sales today " + com.mozkhan.shop.voice.Spoken.En.money(rev, cur), true, lang,
-                    )
-                }) { Text("آزمایش صدا") }
-                if (lang == "fa" && ttsSt != com.mozkhan.shop.voice.VoiceSpeaker.Status.READY) Text(
-                    "صدای فارسی پیدا نشد؛ «خودکار» یا «انگلیسی» را انتخاب کنید.",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn,
-                )
-            }
             val learned by prefs.voiceLearned.collectAsState()
             Text(
                 "دستیار از انتخاب‌های شما یاد می‌گیرد: وقتی از بین پیشنهادها کالای درست را بزنید، دفعهٔ بعد همان را مستقیم می‌آورد" +
