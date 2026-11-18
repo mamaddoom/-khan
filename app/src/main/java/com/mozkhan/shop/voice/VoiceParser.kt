@@ -246,11 +246,32 @@ object VoiceParser {
         )
     }
 
+    /** Every word the selling commands use (numbers, units, commands), for the speech recognizer's word list. */
+    fun vocabulary(): Set<String> =
+        ones.keys + scales.keys + unitWords.keys + filler + checkoutWords + removeWords +
+            setOf("نیم", "و", "تخفیف", "درصد", "درصدی", "فاکتور", "خالی", "کد", "همه", "پاک", "لغو", "اول", "کن", "بکن", "کارت", "نقد", "نقدی", "نسیه")
+
     // ------------------------------------------------------------------ fuzzy matching
+    /**
+     * Spelling-independent form for comparing names: letters that sound the same in Persian are folded together
+     * (the speech model may write "صدف" as "سدف", "ذرت" as "زرت", "طلایی" as "تلایی").
+     */
+    fun sound(s: String): String = norm(s).map {
+        when (it) {
+            'ث', 'ص' -> 'س'
+            'ذ', 'ض', 'ظ' -> 'ز'
+            'ط' -> 'ت'
+            'ح' -> 'ه'
+            'غ' -> 'ق'
+            'ع', 'ء' -> 'ا'
+            else -> it
+        }
+    }.joinToString("").replace("اا", "ا")
+
     /** 0..1 similarity of two short strings (Levenshtein on normalised text without spaces). */
     fun similarity(a: String, b: String): Double {
-        val x = norm(a).replace(" ", "")
-        val y = norm(b).replace(" ", "")
+        val x = sound(a).replace(" ", "")
+        val y = sound(b).replace(" ", "")
         if (x.isEmpty() || y.isEmpty()) return 0.0
         if (x == y) return 1.0
         val d = levenshtein(x, y)
@@ -276,7 +297,7 @@ object VoiceParser {
      * reverse), and word-by-word similarity (spoken "بهمن کوچیک" vs "بهمن کوچک") all count.
      */
     fun score(query: String, name: String): Double {
-        val q = norm(query); val n = norm(name)
+        val q = sound(query); val n = sound(name)
         if (q.isEmpty() || n.isEmpty()) return 0.0
         if (q == n) return 1.0
         val qs = q.replace(" ", ""); val ns = n.replace(" ", "")

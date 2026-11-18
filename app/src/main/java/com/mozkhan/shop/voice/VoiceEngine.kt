@@ -14,8 +14,6 @@ import org.vosk.LibVosk
 import org.vosk.LogLevel
 import org.vosk.Model
 import org.vosk.Recognizer
-import org.vosk.android.RecognitionListener
-import org.vosk.android.SpeechService
 import java.io.File
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -166,59 +164,159 @@ object VoiceEngine {
         }
     }
 
-    /** One spoken command. Callbacks arrive on the main thread. Call [Session.stop] to finish early. */
-    class Session internal constructor(private val service: SpeechService, private val rec: Recognizer) {
-        @Volatile internal var closed = false
-        fun stop() { if (!closed) runCatching { service.stop() } }
-        internal fun close() {
-            if (closed) return
-            closed = true
-            // stop() interrupts AND joins the recording thread; only then may the recorder and recognizer be released
-            runCatching { service.stop() }
-            runCatching { service.shutdown() }
-            runCatching { rec.close() }
-        }
+    /** What was heard: the best text and other likely readings (most likely first). */
+    data class Heard(val text: String, val alternatives: List<String>)
+
+    /**
+     * [continuous] = keep listening across pauses (product definition) and join the sentences, until [Session.stop],
+     * a spoken stop word ("تمام" / "تأیید") or [maxMs]. Otherwise the first finished sentence is the answer.
+     * [hints] = words the shop really uses (product names, numbers, commands): a second recognizer limited to them runs
+     * on the same audio, which makes names much more reliable; its readings are added to [Heard.alternatives].
+     */
+    data class Options(
+        val continuous: Boolean = false,
+        val maxMs: Long = 15_000,
+        val hints: Collection<String> = emptyList(),
+        val stopWords: Set<String> = emptySet(),
+    )
+
+    class Session internal constructor() {
+        @Volatile internal var stopRequested = false
+        /** Finish now: what was said so far becomes the answer. */
+        fun stop() { stopRequested = true }
     }
 
+    private fun texts(json: String?): List<String> = runCatching {
+        val o = JSONObject(json ?: "{}")
+        val alts = o.optJSONArray("alternatives")
+        if (alts != null) (0 until alts.length()).map { alts.getJSONObject(it).optString("text").trim() }
+        else listOf(o.optString("text").trim())
+    }.getOrDefault(emptyList()).filter { it.isNotEmpty() }
+
+    private fun partial(json: String?) = runCatching { JSONObject(json ?: "{}").optString("partial").trim() }.getOrDefault("")
+
+    /** Vosk grammar: every hint in both spellings of "ی" (the model's lexicon uses the Arabic one), plus [unk]. */
+    private fun grammar(hints: Collection<String>): String? {
+        val words = LinkedHashSet<String>()
+        for (h in hints) {
+            for (w in VoiceParser.norm(h).split(' ')) {
+                if (w.isBlank() || w.length > 30) continue
+                words += w
+                words += w.replace('ی', 'ي')
+            }
+            if (words.size > 3000) break
+        }
+        if (words.isEmpty()) return null
+        return org.json.JSONArray((words + "[unk]").toList()).toString()
+    }
+
+    /** One command (or one dictation). Callbacks arrive on the main thread. */
+    @android.annotation.SuppressLint("MissingPermission") // the screens ask for RECORD_AUDIO before calling this
     suspend fun listen(
         ctx: Context,
+        opt: Options,
         onPartial: (String) -> Unit,
-        onFinal: (String) -> Unit,
+        onFinal: (Heard) -> Unit,
         onError: (String) -> Unit,
     ): Session? {
         val m = runCatching { load(ctx) }.getOrElse { onError(it.message ?: "مدل آماده نیست"); return null }
-        return withContext(Dispatchers.Main) {
-            runCatching {
-                val rec = Recognizer(m, RATE)
-                val svc = SpeechService(rec, RATE)
-                val s = Session(svc, rec)
-                var last = ""
-                var delivered = false
-                fun text(json: String?, key: String) = runCatching { JSONObject(json ?: "{}").optString(key) }.getOrDefault("").trim()
-                fun finish(t: String) {
-                    if (delivered) return
-                    delivered = true
-                    s.close()
-                    if (t.isBlank()) onError("چیزی شنیده نشد؛ دوباره بگویید") else onFinal(t)
+        val session = Session()
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        Thread({ decode(m, opt, session, main, onPartial, onFinal, onError) }, "voice").start()
+        return session
+    }
+
+    private fun decode(
+        m: Model, opt: Options, session: Session, main: android.os.Handler,
+        onPartial: (String) -> Unit, onFinal: (Heard) -> Unit, onError: (String) -> Unit,
+    ) {
+        var free: Recognizer? = null
+        var gram: Recognizer? = null
+        var rec: android.media.AudioRecord? = null
+        try {
+            val f = Recognizer(m, RATE)
+            free = f
+            f.setMaxAlternatives(5)
+            // allow a breath between "دو تا بهمن" and "و یک وینستون" without cutting the sentence
+            runCatching { f.setEndpointerDelays(8f, if (opt.continuous) 1.2f else 0.9f, 25f) }
+            val g = grammar(opt.hints)?.let { spec ->
+                runCatching {
+                    Recognizer(m, RATE, spec).apply { setMaxAlternatives(3); runCatching { setEndpointerDelays(8f, 0.9f, 25f) } }
+                }.getOrNull()
+            }
+            gram = g
+            val ch = android.media.AudioFormat.CHANNEL_IN_MONO
+            val enc = android.media.AudioFormat.ENCODING_PCM_16BIT
+            val min = android.media.AudioRecord.getMinBufferSize(RATE.toInt(), ch, enc)
+            val r = android.media.AudioRecord(android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE.toInt(), ch, enc, maxOf(min, 8192) * 2)
+            rec = r
+            if (r.state != android.media.AudioRecord.STATE_INITIALIZED) error("میکروفون در دسترس نیست (برنامهٔ دیگری از آن استفاده می‌کند؟)")
+            r.startRecording()
+
+            val buf = ShortArray(1600) // 0.1 s
+            val said = ArrayList<String>()      // continuous: finished sentences
+            val gramPending = ArrayList<String>()
+            val t0 = System.currentTimeMillis()
+            var lastShown = ""
+            var stopWordHeard = false
+
+            fun cutAtStopWord(s: String): Pair<String, Boolean> {
+                val t = VoiceParser.norm(s).split(' ').filter { it.isNotEmpty() }
+                val idx = t.indexOfFirst { it in opt.stopWords }
+                return if (idx < 0) s to false else t.take(idx).joinToString(" ") to true
+            }
+
+            while (!session.stopRequested && System.currentTimeMillis() - t0 < opt.maxMs) {
+                val n = r.read(buf, 0, buf.size)
+                if (n < 0) error("خواندن صدا از میکروفون ناموفق بود")
+                if (n == 0) continue
+                val endFree = f.acceptWaveForm(buf, n)
+                if (g != null && g.acceptWaveForm(buf, n)) gramPending += texts(g.result)
+                if (endFree) {
+                    val seg = texts(f.result)
+                    if (seg.isEmpty()) continue
+                    if (!opt.continuous) {
+                        if (g != null) gramPending += texts(g.finalResult)
+                        val heard = Heard(seg.first(), (seg + gramPending).distinct())
+                        main.post { onFinal(heard) }
+                        return
+                    }
+                    val (keep, stop) = cutAtStopWord(seg.first())
+                    if (keep.isNotBlank()) said += keep
+                    lastShown = said.joinToString(" ")
+                    val shown = lastShown
+                    main.post { onPartial(shown) }
+                    if (stop) { stopWordHeard = true; break }
+                } else {
+                    val p = partial(f.partialResult)
+                    val shown = if (opt.continuous) (said + p).filter { it.isNotBlank() }.joinToString(" ") else p
+                    if (shown != lastShown && shown.isNotBlank()) { lastShown = shown; main.post { onPartial(shown) } }
                 }
-                svc.startListening(object : RecognitionListener {
-                    override fun onPartialResult(hypothesis: String?) {
-                        val t = text(hypothesis, "partial")
-                        if (t.isNotEmpty()) { last = t; onPartial(t) }
-                    }
-                    // end of the utterance (short silence): one command = one sentence
-                    override fun onResult(hypothesis: String?) {
-                        val t = text(hypothesis, "text")
-                        if (t.isNotEmpty()) finish(t)
-                    }
-                    override fun onFinalResult(hypothesis: String?) = finish(text(hypothesis, "text").ifEmpty { last })
-                    override fun onError(exception: Exception?) {
-                        if (!delivered) { delivered = true; s.close(); onError("خطای میکروفون: ${exception?.message ?: ""}") }
-                    }
-                    override fun onTimeout() = finish(last)
-                }, 12_000)
-                s
-            }.getOrElse { onError("میکروفون باز نشد: ${it.message}"); null }
+            }
+
+            // stopped by the user, by a stop word, or out of time: whatever is still in the recognizer counts
+            val tail = if (stopWordHeard) emptyList() else texts(f.finalResult)
+            if (g != null) gramPending += texts(g.finalResult)
+            if (opt.continuous) {
+                tail.firstOrNull()?.let { cutAtStopWord(it).first }?.takeIf { it.isNotBlank() }?.let { said += it }
+                val all = said.joinToString(" ").trim()
+                main.post { if (all.isEmpty()) onError("چیزی شنیده نشد؛ دوباره بگویید") else onFinal(Heard(all, listOf(all))) }
+            } else {
+                val best = tail.firstOrNull() ?: gramPending.firstOrNull()
+                val alts = (tail + gramPending).distinct()
+                main.post {
+                    if (best.isNullOrBlank()) onError("چیزی شنیده نشد؛ دوباره بگویید")
+                    else onFinal(Heard(best, alts))
+                }
+            }
+        } catch (e: Throwable) {
+            val msg = e.message ?: e.javaClass.simpleName
+            main.post { onError(msg) }
+        } finally {
+            runCatching { rec?.stop() }
+            runCatching { rec?.release() }
+            runCatching { free?.close() }
+            runCatching { gram?.close() }
         }
     }
 }
