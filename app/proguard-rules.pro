@@ -23,3 +23,9 @@
 -dontwarn androidx.credentials.**
 -dontwarn javax.lang.model.**
 -dontwarn com.google.auto.value.**
+# Vosk speech recognition talks to its native library through JNA, which finds classes, fields and callbacks by name
+-keep class com.sun.jna.** { *; }
+-keep class * implements com.sun.jna.** { *; }
+-keep class org.vosk.** { *; }
+-dontwarn java.awt.**
+-dontwarn com.sun.jna.**

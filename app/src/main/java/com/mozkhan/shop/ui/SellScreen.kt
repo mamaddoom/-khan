@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.ImageSearch
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShoppingCartCheckout
@@ -99,6 +100,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
     var visualOn by remember { mutableStateOf(true) }
     var query by remember { mutableStateOf("") }
     var showCheckout by remember { mutableStateOf(false) }
+    var showVoice by remember { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     // recomposes the overlay text when the image model finishes loading (or fails)
@@ -139,8 +141,8 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                         if (hasCam) {
                             CameraView(
                                 Modifier.fillMaxSize(),
-                                scanBarcodes = pending == null,
-                                frameIntervalMs = if (visualOn && hasPrints && pending == null) 900 else 0,
+                                scanBarcodes = pending == null && !showVoice,
+                                frameIntervalMs = if (visualOn && hasPrints && pending == null && !showVoice) 900 else 0,
                                 torch = torch,
                                 onBarcode = vm::onBarcode,
                                 onFrame = vm::onFrame,
@@ -223,7 +225,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                     item(key = "search") {
                         AppField(query, { query = it; vm.touch() }, "جستجوی کالا (نام یا بارکد)", Modifier.fillMaxWidth(),
                             leading = { Icon(Icons.Filled.Search, null) },
-                            trailing = { if (query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Filled.Close, "پاک کردن") } })
+                            trailing = { if (query.isNotEmpty()) IconButton({ query = "" }) { Icon(Icons.Filled.Close, "پاک کردن") } else IconButton({ showVoice = true; vm.touch() }) { Icon(Icons.Filled.Mic, "دستیار صوتی", tint = MaterialTheme.colorScheme.primary) } })
                     }
                     val q = Fmt.normalize(query).trim()
                     if (q.isNotEmpty()) {
@@ -291,6 +293,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
     }
 
     // ------------------------------------------------------------- confirm / unknown sheet (always visible, camera is paused meanwhile)
+    if (showVoice) VoiceSellSheet(vm, onDismiss = { showVoice = false }) { msg -> scope.launch { snack.showSnackbar(msg) } }
     pending?.let { p ->
         ModalBottomSheet(onDismissRequest = { vm.dismissPending() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             when (p) {
@@ -314,6 +317,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                 onDiscount = vm::setDiscount,
                 onAddCustomer = { n, ph, done -> vm.addCustomer(n, ph, done) },
                 busy = checkingOut,
+                methods = vm.prefs.payMethods.collectAsState().value,
                 onConfirm = { pay, customerId ->
                     showCheckout = false
                     vm.checkout(pay, customerId) { scope.launch { snack.showSnackbar("فروش ثبت شد  ✓") } }

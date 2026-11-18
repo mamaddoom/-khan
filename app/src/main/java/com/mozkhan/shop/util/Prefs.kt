@@ -47,7 +47,15 @@ class Prefs(ctx: Context) {
     val cameraIdle: StateFlow<Int> = _idle.asStateFlow()
     fun setCameraIdle(v: Int) { sp.edit().putInt("camera_idle", v).apply(); _idle.value = v }
 
-    /** DNS of this app: "" = phone default, a preset id, or "manual" (see com.mozkhan.shop.net.DnsPresets) */
+    /** Payment methods shown at checkout, in order (see [PayMethods]). */
+    private val _pay = MutableStateFlow(PayMethods.fromJson(sp.getString("pay_methods", null)))
+    val payMethods: StateFlow<List<PayMethod>> = _pay.asStateFlow()
+    fun setPayMethods(list: List<PayMethod>) {
+        val fixed = PayMethods.fromJson(PayMethods.toJson(list))
+        sp.edit().putString("pay_methods", PayMethods.toJson(fixed)).apply(); _pay.value = fixed
+    }
+
+    /** DNS of this app:"" = phone default, a preset id, or "manual" (see com.mozkhan.shop.net.DnsPresets) */
     private val _dns = MutableStateFlow(sp.getString("dns_preset", "")!!)
     val dnsPreset: StateFlow<String> = _dns.asStateFlow()
     fun setDnsPreset(v: String) { sp.edit().putString("dns_preset", v).apply(); _dns.value = v }

@@ -422,7 +422,22 @@ fun ProductEditScreen(
             }
 
             // ------------------------------------------------ basic info
-            AppField(name, { name = it; dirty = true }, "نام کالا", Modifier.fillMaxWidth())
+            var voiceDef by remember { mutableStateOf(false) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppField(name, { name = it; dirty = true }, "نام کالا", Modifier.weight(1f))
+                MicButton(onClick = { voiceDef = true })
+            }
+            if (voiceDef) VoiceDefineDialog(cur, onDismiss = { voiceDef = false }) { d ->
+                fun toman(x: Double) = Math.round(if (d.rial) x / 10 else x / cur.factor)
+                fun plainNum(x: Double) = if (x == Math.floor(x)) x.toLong().toString() else x.toString()
+                if (d.name.isNotBlank()) name = d.name
+                d.buy?.let { buy = toman(it) }
+                d.sell?.let { sell = toman(it) }
+                d.stock?.let { stockIn = plainNum(it) }
+                d.minStock?.let { minStock = plainNum(it) }
+                d.category?.let { c -> category = com.mozkhan.shop.voice.VoiceParser.best(c, cats, { it }).firstOrNull()?.item ?: c }
+                dirty = true
+            }
             sameName?.let { s ->
                 Text(
                     "کالایی با همین نام قبلاً ثبت شده (کد " + Fmt.digits(s.code) + "). اگر همان کالاست، به جای تعریف دوباره آن را ویرایش کنید.",
