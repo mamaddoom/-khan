@@ -2,6 +2,7 @@ package com.mozkhan.shop.voice
 
 import com.mozkhan.shop.data.Measure
 import com.mozkhan.shop.util.Currency
+import java.util.Locale
 
 /**
  * Text written for the ear (spoken answers). Speech engines read "۱۲۰٬۰۰۰" badly or digit by digit, so every number
@@ -53,6 +54,21 @@ object Spoken {
     }
 
     fun money(toman: Long, cur: Currency): String = number(toman * cur.factor) + " " + cur.fa
+
+    /**
+     * English answers, for phones without a Persian voice: the phone's built-in English voice (offline) reads digits
+     * well, so numbers stay digits ("120,000 toman"). Product names are Persian script and are left out.
+     */
+    object En {
+        fun n(x: Long): String = String.format(Locale.US, "%,d", x)
+        private fun d(x: Double): String = if (Math.abs(x - Math.round(x)) < 0.05) n(Math.round(x)) else String.format(Locale.US, "%.1f", x)
+        fun money(toman: Long, cur: Currency): String = n(toman * cur.factor) + if (cur == Currency.TOMAN) " toman" else " rials"
+        fun qty(q: Double, unit: Measure): String = when (unit) {
+            Measure.PIECE -> d(q) + if (Math.round(q) == 1L) " piece" else " pieces"
+            Measure.WEIGHT -> if (q >= 1000) d(q / 1000) + " kilos" else n(Math.round(q)) + " grams"
+            Measure.VOLUME -> if (q >= 1000) d(q / 1000) + " liters" else n(Math.round(q)) + " milliliters"
+        }
+    }
 
     /** A stock amount in base units: pieces, grams (kilos when large) or millilitres (litres when large). */
     fun qty(q: Double, unit: Measure): String = when (unit) {

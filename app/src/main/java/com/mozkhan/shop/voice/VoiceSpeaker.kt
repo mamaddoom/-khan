@@ -31,6 +31,8 @@ object VoiceSpeaker {
     private var tts: TextToSpeech? = null
     private var pending: String? = null
     @Volatile private var searching = false
+    /** the Persian voice is the phone's own default engine (trusted in "auto"); an extra engine is used only when chosen */
+    @Volatile var fromDefault = false; private set
     private val locales = listOf(Locale("fa", "IR"), Locale("fa"), Locale("fas"))
 
     fun init(ctx: Context) {
@@ -59,6 +61,7 @@ object VoiceSpeaker {
             }
             if (persian(t)) {
                 tts = t
+                fromDefault = engine == null
                 searching = false
                 _status.value = Status.READY
                 pending?.let { say(it) }
@@ -88,23 +91,56 @@ object VoiceSpeaker {
         init(ctx)
     }
 
-    /** Speaks [text] (replacing whatever is being said). Does nothing when [enabled] is false. */
-    fun speak(ctx: Context, text: String, enabled: Boolean) {
-        if (!enabled || text.isBlank()) return
-        init(ctx)
-        when (_status.value) {
-            Status.READY -> say(text)
-            Status.UNKNOWN -> pending = text
-            else -> Unit
-        }
+    // ------------------------------------------------------------------ English (offline) for phones without Persian
+    private var enTts: TextToSpeech? = null
+    @Volatile private var enReady = false
+    private var enPending: String? = null
+    private val _english = MutableStateFlow(false)
+    /** true when the phone's English voice is ready (almost every phone has it, offline) */
+    val english: StateFlow<Boolean> = _english.asStateFlow()
+
+    fun initEnglish(ctx: Context) {
+        if (enTts != null) return
+        var made: TextToSpeech? = null
+        made = runCatching {
+            TextToSpeech(ctx.applicationContext) { st ->
+                val t = made ?: enTts
+                if (st == TextToSpeech.SUCCESS && t != null) {
+                    val r = runCatching { t.setLanguage(Locale.US) }.getOrDefault(TextToSpeech.LANG_NOT_SUPPORTED)
+                    enReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED
+                    _english.value = enReady
+                    if (enReady) runCatching { t.setSpeechRate(0.95f) }
+                    if (enReady) enPending?.let { runCatching { t.speak(it, TextToSpeech.QUEUE_FLUSH, null, "mozkhan-en") } }
+                }
+                enPending = null
+            }
+        }.getOrNull()
+        enTts = made
     }
 
+    /**
+     * Speaks an answer. [lang]: "fa" = Persian only, "en" = English only, "auto" = Persian when this phone has a Persian
+     * voice, otherwise English. Does nothing when [enabled] is false.
+     */
+    fun speak(ctx: Context, fa: String, en: String, enabled: Boolean, lang: String) {
+        if (!enabled) return
+        if (lang != "en") init(ctx)
+        val persian = lang != "en" && fa.isNotBlank()
+        when {
+            persian && _status.value == Status.READY && (lang == "fa" || fromDefault) -> say(fa)
+            persian && _status.value == Status.UNKNOWN && lang == "fa" -> pending = fa
+            lang != "fa" && en.isNotBlank() -> {
+                initEnglish(ctx)
+                if (enReady) runCatching { enTts?.speak(en, TextToSpeech.QUEUE_FLUSH, null, "mozkhan-en") } else enPending = en
+            }
+        }
+    }
     private fun say(text: String) {
         runCatching { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "mozkhan") }
     }
 
     /** Silence: before the microphone opens (the recognizer must not hear the phone talking). */
-    fun stop() { runCatching { tts?.stop() } }
+    fun stop() { runCatching { tts?.stop() }; runCatching { enTts?.stop() } }
 
     // ------------------------------------------------------------------ offline Persian engine (download + install)
     private const val ENGINE_VER = "1.12.22"

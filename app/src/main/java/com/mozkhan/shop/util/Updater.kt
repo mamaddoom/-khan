@@ -29,6 +29,8 @@ data class UpdateState(
     val downloaded: File? = null,
     val message: String? = null,
     val checkedAt: Long = 0,
+    /** what changed in the new version (Persian notes of the release), shown before installing */
+    val notes: String = "",
 )
 
 /**
@@ -39,6 +41,13 @@ class Updater(private val ctx: Context, private val scope: CoroutineScope) {
     companion object {
         const val REPO = "mamaddoom/-khan"
         private const val API = "https://api.github.com/repos/$REPO/releases/latest"
+    /** The Persian change notes inside a release text: between the `<!-- notes -->` and `<!-- /notes -->` lines. */
+    internal fun releaseNotes(body: String): String {
+        val a = body.indexOf("<!-- notes -->")
+        if (a < 0) return ""
+        val b = body.indexOf("<!-- /notes -->", a).takeIf { it > 0 } ?: body.length
+        return body.substring(a + "<!-- notes -->".length, b).replace("\r", "").trim()
+    }
     }
 
     private val _state = MutableStateFlow(UpdateState())
@@ -49,10 +58,10 @@ class Updater(private val ctx: Context, private val scope: CoroutineScope) {
         _state.value = _state.value.copy(checking = true, message = if (silent) _state.value.message else null)
         scope.launch(Dispatchers.IO) {
             val r = runCatching { fetchLatest() }
-            r.onSuccess { (name, code, url) ->
+            r.onSuccess { (name, code, url, notes) ->
                 val newer = code > BuildConfig.VERSION_CODE
                 _state.value = _state.value.copy(
-                    checking = false, available = newer, latestName = name, latestCode = code, apkUrl = url,
+                    checking = false, available = newer, latestName = name, latestCode = code, apkUrl = url, notes = notes,
                     checkedAt = System.currentTimeMillis(),
                     message = if (newer) null else if (silent) null else "نسخهٔ شما به‌روز است",
                 )
@@ -70,7 +79,9 @@ class Updater(private val ctx: Context, private val scope: CoroutineScope) {
 
     private class NoRelease : Exception()
 
-    private fun fetchLatest(): Triple<String, Long, String> {
+    private data class Latest(val name: String, val code: Long, val url: String, val notes: String)
+
+    private fun fetchLatest(): Latest {
         val c = URL(API).openConnection() as HttpURLConnection
         c.connectTimeout = 10_000; c.readTimeout = 15_000
         c.setRequestProperty("Accept", "application/vnd.github+json")
@@ -88,7 +99,7 @@ class Updater(private val ctx: Context, private val scope: CoroutineScope) {
                 if (a.optString("name").endsWith(".apk")) { url = a.optString("browser_download_url"); break }
             }
             if (url.isEmpty()) throw NoRelease()
-            return Triple(tag.removePrefix("v").substringBeforeLast('-'), code, url)
+            return Latest(tag.removePrefix("v").substringBeforeLast('-'), code, url, releaseNotes(j.optString("body")))
         } finally {
             c.disconnect()
         }

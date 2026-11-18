@@ -65,6 +65,24 @@ jobs:
           name: MozKhan-release-apk
           path: ${{ steps.ver.outputs.apk }}
 
+      # Release text: the Persian change notes of this version (release-notes/<version>.md) between markers;
+      # the in-app updater shows the part between the markers before installing.
+      - name: Release notes
+        id: notes
+        run: |
+          {
+            echo "MozKhan ${{ steps.ver.outputs.vn }}"
+            echo ""
+            echo "<!-- notes -->"
+            if [ -f "release-notes/${{ steps.ver.outputs.vn }}.md" ]; then cat "release-notes/${{ steps.ver.outputs.vn }}.md"; fi
+            echo "<!-- /notes -->"
+            echo ""
+            echo "versionCode=${{ steps.ver.outputs.vc }}"
+            echo "commit: ${{ github.sha }}"
+            echo ""
+            echo "Install the APK below. It updates the installed app in place (same signing key)."
+          } > release-body.md
+
       # Every successful build on main becomes the newest GitHub Release (marked "Latest").
       # The in-app updater reads this release: tag = v<versionName>-<versionCode>.
       - name: Publish GitHub Release
@@ -75,9 +93,4 @@ jobs:
           name: MozKhan ${{ steps.ver.outputs.vn }} (build ${{ steps.ver.outputs.vc }})
           make_latest: true
           files: ${{ steps.ver.outputs.apk }}
-          body: |
-            MozKhan ${{ steps.ver.outputs.vn }}
-            versionCode=${{ steps.ver.outputs.vc }}
-            commit: ${{ github.sha }}
-
-            Install the APK below. It updates the installed app in place (same signing key).
+          body_path: release-body.md

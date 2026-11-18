@@ -177,3 +177,21 @@ class DefineEditsTest {
         assertEquals("بهمن کوچک فروش صد هزار", VoiceParser.applyEdits("بهمن کوچک، فروش صد هزار"))
     }
 }
+
+/** v2.1.1: English spoken answers and release notes */
+class EnglishAndNotesTest {
+    @Test fun englishAnswers() {
+        assertEquals("120,000 toman", Spoken.En.money(120_000, Currency.TOMAN))
+        assertEquals("1,200,000 rials", Spoken.En.money(120_000, Currency.RIAL))
+        assertEquals("1.5 kilos", Spoken.En.qty(1500.0, Measure.WEIGHT))
+        assertEquals("250 grams", Spoken.En.qty(250.0, Measure.WEIGHT))
+        assertEquals("1 piece", Spoken.En.qty(1.0, Measure.PIECE))
+        assertEquals("12 pieces", Spoken.En.qty(12.0, Measure.PIECE))
+    }
+
+    @Test fun releaseNotesBetweenMarkers() {
+        val body = "MozKhan 2.1.1\r\n\r\n<!-- notes -->\r\n• یک\n• دو\n<!-- /notes -->\n\nversionCode=1"
+        assertEquals("• یک\n• دو", com.mozkhan.shop.util.Updater.releaseNotes(body))
+        assertEquals("", com.mozkhan.shop.util.Updater.releaseNotes("old release without notes"))
+    }
+}
