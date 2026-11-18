@@ -96,6 +96,11 @@ class Prefs(ctx: Context) {
     val voiceSpeak: StateFlow<Boolean> = _voiceSpeak.asStateFlow()
     fun setVoiceSpeak(v: Boolean) { sp.edit().putBoolean("voice_speak", v).apply(); _voiceSpeak.value = v }
 
+    /** language of spoken answers: "auto" (Persian when the phone itself has it, else English), "fa", "en" */
+    private val _voiceLang = MutableStateFlow(sp.getString("voice_lang", "auto") ?: "auto")
+    val voiceLang: StateFlow<String> = _voiceLang.asStateFlow()
+    fun setVoiceLang(v: String) { sp.edit().putString("voice_lang", v).apply(); _voiceLang.value = v }
+
     /** corrections the user made: spoken form -> product id ("c:" + spoken form -> customer id). Kept per phone. */
     private val _learned = MutableStateFlow(readLearned())
     val voiceLearned: StateFlow<Map<String, String>> = _learned.asStateFlow()

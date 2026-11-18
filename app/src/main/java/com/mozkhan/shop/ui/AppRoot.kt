@@ -134,8 +134,12 @@ fun AppRoot(vm: MainVm, activity: Activity) {
             onDismissRequest = { updDismissed = true },
             title = { Text("نسخهٔ جدید آماده است") },
             text = {
-                androidx.compose.foundation.layout.Column {
+                androidx.compose.foundation.layout.Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
                     Text("نسخهٔ ${upd.latestName} منتشر شده است. اطلاعات شما با به‌روزرسانی حفظ می‌شود.")
+                    if (upd.notes.isNotBlank()) {
+                        Text("تغییرات این نسخه:", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(upd.notes, Modifier.padding(top = 4.dp), style = MaterialTheme.typography.bodyMedium)
+                    }
                     if (upd.downloading) Text("در حال دانلود… ${(upd.progress * 100).toInt()}٪", Modifier.padding(top = 8.dp))
                     upd.message?.let { Text(it, Modifier.padding(top = 8.dp), color = MaterialTheme.colorScheme.error) }
                 }
