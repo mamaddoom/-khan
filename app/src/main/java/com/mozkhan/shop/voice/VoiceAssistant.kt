@@ -88,4 +88,37 @@ object VoiceAssistant {
         alias[w]?.let { a -> all.firstOrNull { it.name == a }?.let { return it } }
         return exact.firstOrNull()?.item
     }
+
+    /**
+     * The speech engine gives several readings of the same sentence (and the word-list recognizer adds its own).
+     * The best one is the reading that makes the most sense for THIS shop: commands with their key words, or items
+     * whose names clearly match real products. Ties keep the engine's own order (most likely first).
+     */
+    fun pickBest(readings: List<String>, products: List<ProductWithStock>, methods: List<PayMethod>): String? {
+        val list = readings.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (list.size <= 1) return list.firstOrNull()
+        val sellable = products.filter { it.kind != KIND_INGREDIENT }
+        return list.withIndex().maxByOrNull { (i, text) -> fit(text, sellable, methods) - 0.01 * i }?.value
+    }
+
+    /** How well one reading fits the shop (higher = better). */
+    fun fit(text: String, products: List<ProductWithStock>, methods: List<PayMethod>): Double =
+        when (val c = VoiceParser.parse(text)) {
+            is VoiceParser.Cmd.Add -> c.items.sumOf { item ->
+                val l = line(item, products)
+                when {
+                    l.product != null && l.warning == null -> 1.0 + VoiceParser.score(item.query, l.product.name) + (if (item.qty != null) 0.2 else 0.0)
+                    l.product != null -> 0.8
+                    l.choices.isNotEmpty() -> 0.3
+                    else -> -0.7
+                }
+            }
+            is VoiceParser.Cmd.Checkout -> 1.6 + (if (c.methodWords.isBlank() || method(c.methodWords, methods) != null) 0.3 else 0.0)
+            is VoiceParser.Cmd.Remove, is VoiceParser.Cmd.Discount, VoiceParser.Cmd.Clear -> 1.6
+            is VoiceParser.Cmd.Unknown -> -1.0
+        }
+
+    /** Words for the speech recognizer's word list: product names, payment methods and all command words. */
+    fun hints(products: List<ProductWithStock>, methods: List<PayMethod>): List<String> =
+        VoiceParser.vocabulary().toList() + products.map { it.name } + methods.map { it.name }
 }

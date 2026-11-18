@@ -73,10 +73,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 // ===================================================================== listening state (one command at a time)
-class VoiceListen(private val ctx: Context, private val scope: CoroutineScope) {
+class VoiceListen(private val ctx: Context, private val scope: CoroutineScope, private val options: () -> VoiceEngine.Options) {
     var listening by mutableStateOf(false); private set
     var partial by mutableStateOf(""); private set
-    var heard by mutableStateOf<String?>(null)
+    var heard by mutableStateOf<VoiceEngine.Heard?>(null)
     var error by mutableStateOf<String?>(null)
     private var session: VoiceEngine.Session? = null
 
@@ -85,7 +85,7 @@ class VoiceListen(private val ctx: Context, private val scope: CoroutineScope) {
         partial = ""; heard = null; error = null; listening = true
         scope.launch {
             session = VoiceEngine.listen(
-                ctx,
+                ctx, options(),
                 onPartial = { partial = it },
                 onFinal = { heard = it; listening = false; session = null },
                 onError = { error = it; listening = false; session = null },
@@ -94,14 +94,15 @@ class VoiceListen(private val ctx: Context, private val scope: CoroutineScope) {
         }
     }
 
+    /** Finish now: what was said so far is the answer. */
     fun stop() { session?.stop() }
 }
 
 @Composable
-fun rememberVoiceListen(): VoiceListen {
+fun rememberVoiceListen(options: () -> VoiceEngine.Options = { VoiceEngine.Options() }): VoiceListen {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val v = remember { VoiceListen(ctx.applicationContext, scope) }
+    val v = remember { VoiceListen(ctx.applicationContext, scope, options) }
     DisposableEffect(Unit) { onDispose { v.stop() } }
     return v
 }
@@ -196,19 +197,21 @@ fun VoiceSellSheet(vm: MainVm, onDismiss: () -> Unit, onMessage: (String) -> Uni
     val st by VoiceEngine.state.collectAsState()
     LaunchedEffect(Unit) { VoiceEngine.refresh(ctx) }
     val ready = st is VoiceEngine.State.Installed || st is VoiceEngine.State.Ready || st is VoiceEngine.State.Loading
-    val v = rememberVoiceListen()
-    val mic = rememberMicStarter(v)
     val products by vm.products.collectAsState()
     val cart by vm.cart.collectAsState()
     val cur by vm.currency.collectAsState()
     val methods by vm.prefs.payMethods.collectAsState()
     val checkingOut by vm.checkingOut.collectAsState()
+    // the second recognizer only knows this shop's words: product names, payment methods, numbers and commands
+    val v = rememberVoiceListen { VoiceEngine.Options(maxMs = 20_000, hints = VoiceAssistant.hints(vm.products.value, vm.prefs.payMethods.value)) }
+    val mic = rememberMicStarter(v)
 
     // start listening right away once everything is ready
     var autoStarted by remember { mutableStateOf(false) }
     LaunchedEffect(ready) { if (ready && !autoStarted) { autoStarted = true; mic() } }
 
-    val heard = v.heard
+    // of all readings the engine offers, the one that makes most sense for this shop
+    val heard = remember(v.heard) { v.heard?.let { h -> VoiceAssistant.pickBest(listOf(h.text) + h.alternatives, products, methods) ?: h.text } }
     val cmd = remember(heard) { heard?.let { VoiceParser.parse(it) } }
     val picks = remember(heard) { mutableStateMapOf<Int, ProductWithStock>() }
     val qtyEdit = remember(heard) { mutableStateMapOf<Int, Double>() }
@@ -333,54 +336,93 @@ private fun PlanRow(l: VoiceAssistant.Line, cur: Currency, onPick: (ProductWithS
 }
 
 // ===================================================================== defining a product by voice
-/** Listens to "نام … قیمت خرید … فروش … موجودی … دسته …" and hands the understood fields back. */
+/** words that end a dictation ("…موجودی پنجاه، تمام") */
+private val DEFINE_STOP = setOf("تمام", "تموم", "تایید", "کافیه", "کافی", "بسه")
+
+/**
+ * Dictation of "نام … قیمت خرید … فروش … موجودی … دسته …". Pauses do NOT end it: it keeps listening (up to 2 minutes)
+ * and fills the fields live, until «تمام شد» is tapped or "تمام / تأیید" is said. The dialog only closes with
+ * «تأیید» or «انصراف» (a tap outside does nothing), and «ادامه» adds more to what was already said.
+ */
 @Composable
 fun VoiceDefineDialog(cur: Currency, onDismiss: () -> Unit, onApply: (VoiceParser.Definition) -> Unit) {
     val ctx = LocalContext.current
     val st by VoiceEngine.state.collectAsState()
     LaunchedEffect(Unit) { VoiceEngine.refresh(ctx) }
     val ready = st is VoiceEngine.State.Installed || st is VoiceEngine.State.Ready || st is VoiceEngine.State.Loading
-    val v = rememberVoiceListen()
+    val v = rememberVoiceListen { VoiceEngine.Options(continuous = true, maxMs = 120_000, stopWords = DEFINE_STOP) }
     val mic = rememberMicStarter(v)
     var started by remember { mutableStateOf(false) }
     LaunchedEffect(ready) { if (ready && !started) { started = true; mic() } }
-    val d = remember(v.heard) { v.heard?.let { VoiceParser.parseDefinition(it) } }
+
+    // everything said so far (several dictations can be joined with «ادامه»)
+    var said by remember { mutableStateOf("") }
+    var appending by remember { mutableStateOf(false) }
+    var applyWhenDone by remember { mutableStateOf(false) }
+    LaunchedEffect(v.heard) {
+        v.heard?.let { h -> said = if (appending) (said + " " + h.text).trim() else h.text; appending = false }
+    }
+    val live = if (v.listening) (if (appending) "$said ${v.partial}" else v.partial).trim() else said
+    val d = remember(live) { if (live.isBlank()) null else VoiceParser.parseDefinition(live) }
+    val usable = d != null && (d.name.isNotBlank() || d.buy != null || d.sell != null)
+
+    fun apply() { if (d != null) { onApply(d); onDismiss() } }
+    // «تأیید» while still listening: finish the dictation first, then apply what was understood
+    LaunchedEffect(v.listening, said) { if (applyWhenDone && !v.listening) { applyWhenDone = false; apply() } }
 
     AlertDialog(
-        onDismissRequest = { v.stop(); onDismiss() },
+        onDismissRequest = {},
+        properties = androidx.compose.ui.window.DialogProperties(dismissOnClickOutside = false, dismissOnBackPress = true),
         title = { Text("تعریف کالا با صدا") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (!ready) { VoiceModelCard(compact = true); return@Column }
-                if (d == null || v.listening) {
-                    MicPanel(v, "مثال: «بهمن کوچک، قیمت خرید نود هزار، فروش صد هزار، موجودی پنجاه، دسته سیگار»", mic)
-                } else {
-                    Text("شنیدم: «${v.heard}»", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    fun money(x: Double?) = x?.let { Fmt.money(Math.round(if (d.rial) it / 10 else it / cur.factor), cur) } ?: "—"
-                    Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)).padding(12.dp)) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            SumRow("نام", d.name.ifBlank { "—" })
-                            SumRow("قیمت خرید", money(d.buy))
-                            SumRow("قیمت فروش", money(d.sell))
-                            SumRow("موجودی", d.stock?.let { Fmt.digits(plain(it)) } ?: "—")
-                            if (d.minStock != null) SumRow("حداقل موجودی", Fmt.digits(plain(d.minStock)))
-                            SumRow("دسته", d.category ?: "—")
-                        }
-                    }
-                    Text("فقط بخش‌هایی که گفته شده در فرم پر می‌شوند؛ بعد می‌توانید ویرایش کنید.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                MicPanel(
+                    v,
+                    if (said.isBlank()) "بگویید: «بهمن کوچک، قیمت خرید نود هزار، فروش صد هزار، موجودی پنجاه، دسته سیگار» و در آخر «تمام»"
+                    else "برای اضافه کردن «ادامه» را بزنید",
+                    onMic = { appending = said.isNotBlank(); mic() },
+                )
+                if (v.listening) {
+                    OutlinedButton(onClick = { v.stop() }, modifier = Modifier.fillMaxWidth()) { Text("تمام شد") }
                 }
+                if (d != null) DefinitionCard(d, cur)
+                if (d != null && !v.listening) Text(
+                    "فقط بخش‌هایی که گفته شده در فرم پر می‌شوند؛ بعد می‌توانید ویرایش کنید.",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         },
         confirmButton = {
-            TextButton(enabled = d != null && !v.listening && (d.name.isNotBlank() || d.buy != null || d.sell != null), onClick = { onApply(d!!); onDismiss() }) { Text("اعمال در فرم") }
+            TextButton(enabled = usable && !applyWhenDone, onClick = { if (v.listening) { applyWhenDone = true; v.stop() } else apply() }) {
+                Text("تأیید")
+            }
         },
         dismissButton = {
             Row {
-                if (ready && d != null && !v.listening) TextButton(onClick = mic) { Text("دوباره") }
+                if (ready && !v.listening && said.isNotBlank()) {
+                    TextButton(onClick = { appending = true; mic() }) { Text("ادامه") }
+                    TextButton(onClick = { said = ""; appending = false; mic() }) { Text("از اول") }
+                }
                 TextButton(onClick = { v.stop(); onDismiss() }) { Text("انصراف") }
             }
         },
     )
+}
+
+@Composable
+private fun DefinitionCard(d: VoiceParser.Definition, cur: Currency) {
+    fun money(x: Double?) = x?.let { Fmt.money(Math.round(if (d.rial) it / 10 else it / cur.factor), cur) } ?: "—"
+    Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)).padding(12.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SumRow("نام", d.name.ifBlank { "—" })
+            SumRow("قیمت خرید", money(d.buy))
+            SumRow("قیمت فروش", money(d.sell))
+            SumRow("موجودی", d.stock?.let { Fmt.digits(plain(it)) } ?: "—")
+            if (d.minStock != null) SumRow("حداقل موجودی", Fmt.digits(plain(d.minStock)))
+            SumRow("دسته", d.category ?: "—")
+        }
+    }
 }
 
 /** Small round mic button for toolbars and fields. */

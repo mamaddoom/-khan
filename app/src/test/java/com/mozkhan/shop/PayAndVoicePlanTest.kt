@@ -50,4 +50,23 @@ class PayAndVoicePlanTest {
         plan("دو قهوه").single().let { assertEquals(2000.0, it.qty, 0.0) }
         plan("سه تا پفک").single().let { assertNull(it.product); assertTrue(it.warning!!.contains("پیدا نشد")) }
     }
+
+    @Test fun bestReadingIsTheOneThatFitsTheShop() {
+        val prods = listOf(p("1", "بهمن کوچک"), p("2", "وینستون لایت"), p("3", "مارلبرو قرمز"))
+        // the engine's first guess is nonsense for this shop; a later reading names real products
+        val best = VoiceAssistant.pickBest(listOf("دو تا بهمن کوچه", "دو تا بهمن کوچک و یک وینستون", "دوتا به من"), prods, methods)
+        assertEquals("دو تا بهمن کوچک و یک وینستون", best)
+        // a clear command beats a garbled item list
+        assertEquals("ثبت کن کارتی", VoiceAssistant.pickBest(listOf("سبد کن کارتی", "ثبت کن کارتی"), prods, methods))
+        // with nothing better, the engine's own order is kept
+        assertEquals("یک", VoiceAssistant.pickBest(listOf("یک", "یک"), prods, methods))
+    }
+
+    @Test fun soundAlikeLettersMatch() {
+        val prods = listOf(p("1", "صدف"), p("2", "ذرت مکزیکی"), p("3", "طلایی"))
+        fun first(s: String) = VoiceAssistant.lines((VoiceParser.parse(s) as VoiceParser.Cmd.Add).items, prods).single().product?.id
+        assertEquals("1", first("دو تا سدف"))
+        assertEquals("2", first("یک زرت مکزیکی"))
+        assertEquals("3", first("سه تا تلایی"))
+    }
 }
