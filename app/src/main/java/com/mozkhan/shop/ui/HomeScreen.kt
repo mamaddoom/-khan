@@ -26,6 +26,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,6 +48,7 @@ fun HomeScreen(vm: MainVm, onGo: (String) -> Unit, onNew: () -> Unit) {
     val exp by vm.todayExpenses.collectAsState()
     val top by vm.todayTop.collectAsState()
     val recent by vm.recent.collectAsState()
+    var detail by remember { mutableStateOf<com.mozkhan.shop.data.Sale?>(null) }
     val products by vm.products.collectAsState()
     val low = remember(products) { products.filter { it.low } }
     // "today" must roll over at midnight even when the shop leaves the app open on this screen
@@ -126,7 +129,7 @@ fun HomeScreen(vm: MainVm, onGo: (String) -> Unit, onNew: () -> Unit) {
         if (recent.isEmpty()) item {
             EmptyState(Icons.Filled.ReceiptLong, "هنوز فروشی ثبت نشده", "از بخش «فروش»، بارکد کالا را اسکن کنید و اولین فاکتور را بزنید.")
         } else items(recent, key = { it.id }) { s ->
-            AppCard {
+            AppCard(onClick = { detail = s }) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconBadge(Icons.Filled.ReceiptLong, MaterialTheme.colorScheme.primary, size = 40)
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
@@ -140,6 +143,7 @@ fun HomeScreen(vm: MainVm, onGo: (String) -> Unit, onNew: () -> Unit) {
         }
         item { Spacer(Modifier.height(8.dp)) }
     }
+    detail?.let { s -> SaleDetailDialog(vm, s, cur) { detail = null } }
 }
 
 @Composable

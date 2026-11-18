@@ -265,7 +265,9 @@ private fun ExpenseDialog(cur: Currency, onDismiss: () -> Unit, onOk: (String, L
 }
 
 @Composable
-private fun SaleDetailDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
+internal fun SaleDetailDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
+    var share by remember { mutableStateOf(false) }
+    if (share) { ShareInvoiceDialog(vm, s) { share = false }; return }
     val items by remember(s.id) { vm.repo.observeItemsOf(s.id) }.collectAsState(initial = emptyList<SaleItem>())
     var confirm by remember { mutableStateOf(false) }
     AlertDialog(
@@ -292,6 +294,11 @@ private fun SaleDetailDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -
                 Text(if (confirm) "بله، ابطال شود" else "ابطال فاکتور", color = MaterialTheme.colorScheme.error)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("بستن") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { share = true }) { Text("اشتراک فاکتور") }
+                TextButton(onClick = onDismiss) { Text("بستن") }
+            }
+        },
     )
 }

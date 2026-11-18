@@ -102,6 +102,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
     var showCheckout by remember { mutableStateOf(false) }
     var showVoice by remember { mutableStateOf(false) }
     val snack = remember { SnackbarHostState() }
+    var shareSale by remember { mutableStateOf<com.mozkhan.shop.data.Sale?>(null) }
     val scope = rememberCoroutineScope()
     // recomposes the overlay text when the image model finishes loading (or fails)
     val modelVer by com.mozkhan.shop.ml.ImageFingerprint.changes.collectAsState()
@@ -294,6 +295,7 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
 
     // ------------------------------------------------------------- confirm / unknown sheet (always visible, camera is paused meanwhile)
     if (showVoice) VoiceSellSheet(vm, onDismiss = { showVoice = false }) { msg -> scope.launch { snack.showSnackbar(msg) } }
+    shareSale?.let { s -> ShareInvoiceDialog(vm, s) { shareSale = null } }
     pending?.let { p ->
         ModalBottomSheet(onDismissRequest = { vm.dismissPending() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             when (p) {
@@ -320,7 +322,12 @@ fun SellScreen(vm: MainVm, onDefine: (String) -> Unit, onDefinePreset: (String) 
                 methods = vm.prefs.payMethods.collectAsState().value,
                 onConfirm = { pay, customerId ->
                     showCheckout = false
-                    vm.checkout(pay, customerId) { scope.launch { snack.showSnackbar("فروش ثبت شد  ✓") } }
+                    vm.checkout(pay, customerId) { sale ->
+                        scope.launch {
+                            val r = snack.showSnackbar("فروش ثبت شد  ✓", actionLabel = "اشتراک فاکتور", duration = androidx.compose.material3.SnackbarDuration.Short)
+                            if (r == androidx.compose.material3.SnackbarResult.ActionPerformed) shareSale = sale
+                        }
+                    }
                 },
             )
         }

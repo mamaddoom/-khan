@@ -62,7 +62,9 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
     var open by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var counted by remember { mutableStateOf(false) }
-    val q = Fmt.normalize(query).trim()
+    var basis by remember { mutableStateOf("BUY") }
+    var manual by remember { mutableStateOf(0L) }
+    val q =Fmt.normalize(query).trim()
     val results = if (q.isEmpty()) emptyList() else products.filter { it.trackStock && (it.name.contains(q, true) || it.barcode?.contains(q) == true || it.code.contains(q, true)) }.take(6)
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -103,8 +105,8 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
                         }
                     }
                     if (lines.isNotEmpty()) {
-                        val cost = lines.sumOf { (p, q1) -> Math.round(q1 * p.baseCost) }
-                        SumRow("ارزش به قیمت خرید", Fmt.money(cost, cur))
+                        SumRow("ارزش به قیمت خرید", Fmt.money(com.mozkhan.shop.data.exitValue(lines, "BUY", 0), cur))
+                        SumRow("ارزش به قیمت فروش", Fmt.money(com.mozkhan.shop.data.exitValue(lines, "SELL", 0), cur))
                         val over = lines.filter { (p, q1) -> q1 > p.stock }
                         if (over.isNotEmpty()) Text(
                             "مقدار خروج از موجودی ثبت‌شده بیشتر است: " + over.joinToString("، ") { it.first.name },
@@ -122,12 +124,24 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
                             )
                         }
                     }
+                    if (counted) {
+                        Text("مبلغ خروج بر اساس", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(listOf("BUY" to "قیمت خرید", "SELL" to "قیمت فروش", "MANUAL" to "مبلغ دستی")) { (b, label) ->
+                                FilterChip(basis == b, { basis = b }, label = { Text(label) })
+                            }
+                        }
+                        if (basis == "MANUAL") MoneyField("مبلغ خروج", manual, cur, { manual = it }, Modifier.fillMaxWidth())
+                        if (lines.isNotEmpty()) SumRow(
+                            "از سود کم می‌شود", Fmt.money(com.mozkhan.shop.data.exitValue(lines, basis, manual), cur), MaterialTheme.extra.loss,
+                        )
+                    }
                     Button(
-                        enabled = !saving && lines.isNotEmpty() && lines.all { it.second > 0 },
+                        enabled = !saving && lines.isNotEmpty() && lines.all { it.second > 0 } && !(counted && basis == "MANUAL" && manual <= 0),
                         onClick = {
                             if (saving) return@Button // a double tap must not take the goods out twice
                             saving = true
-                            vm.createExit(kind, note, lines.toList(), counted) { lines.clear(); note = ""; counted = false }
+                            vm.createExit(kind, note, lines.toList(), counted, basis, manual) { lines.clear(); note = ""; counted = false; basis = "BUY"; manual = 0 }
                                 .invokeOnCompletion { saving = false }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -153,7 +167,7 @@ private fun DocRow(vm: MainVm, d: StockDoc, cur: Currency, expanded: Boolean, to
                     Text(kindFa(d.kind) + if (d.voided) " — باطل شد" else "", style = MaterialTheme.typography.titleSmall,
                         color = if (d.voided) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
                     Text(
-                        Jalali.dateTime(d.ts) + (if (d.note.isNotBlank()) " • ${d.note}" else "") + if (d.counted) " • از سود کم می‌شود" else "",
+                        Jalali.dateTime(d.ts) + (if (d.note.isNotBlank()) " • ${d.note}" else "") + if (d.counted) " • از سود کم می‌شود" + when (d.priceBasis) { "SELL" -> " (قیمت فروش)"; "MANUAL" -> " (مبلغ دستی)"; else -> " (قیمت خرید)" } else "",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

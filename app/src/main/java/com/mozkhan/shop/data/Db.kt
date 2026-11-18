@@ -309,7 +309,7 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         Product::class, StockMove::class, StockDoc::class, Sale::class, SaleItem::class,
         Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class, Cheque::class, CashClose::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -326,12 +326,12 @@ abstract class AppDb : RoomDatabase() {
 
     companion object {
         /** must always equal the @Database version above (drives the pre-migration backup copy in ShopApp) */
-        const val VERSION = 8
+        const val VERSION = 9
 
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx, AppDb::class.java, "shop.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 // Only the throw-away v1 test database may ever be dropped. Never allow this for v2 or later.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
@@ -406,4 +406,11 @@ interface CashDao {
     @Query("SELECT * FROM cash_closes") suspend fun all(): List<CashClose>
     @Query("SELECT * FROM cash_closes WHERE id = :id") suspend fun get(id: String): CashClose?
     @Query("SELECT * FROM cash_closes WHERE id IN (:ids)") suspend fun closesIn(ids: List<String>): List<CashClose>
+}
+
+/** v8 -> v9: how a counted exit was valued (buy price, sell price or a manual amount) */
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.addColumn("stock_docs", "priceBasis", "TEXT NOT NULL DEFAULT 'BUY'")
+    }
 }

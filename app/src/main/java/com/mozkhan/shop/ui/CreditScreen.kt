@@ -235,6 +235,8 @@ private fun PaymentDialog(cur: Currency, debt: Long, onDismiss: () -> Unit, onOk
 
 @Composable
 fun SaleLinesDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
+    var share by remember { mutableStateOf(false) }
+    if (share) { ShareInvoiceDialog(vm, s) { share = false }; return }
     val items by remember(s.id) { vm.repo.observeItemsOf(s.id) }.collectAsState(initial = emptyList<com.mozkhan.shop.data.SaleItem>())
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -252,5 +254,6 @@ fun SaleLinesDialog(vm: MainVm, s: Sale, cur: Currency, onDismiss: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("بستن") } },
+        dismissButton = { TextButton(onClick = { share = true }) { Text("اشتراک فاکتور") } },
     )
 }
