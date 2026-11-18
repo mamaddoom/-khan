@@ -159,6 +159,8 @@ fun ExitScreen(vm: MainVm, onBack: () -> Unit) {
 private fun DocRow(vm: MainVm, d: StockDoc, cur: Currency, expanded: Boolean, toggle: () -> Unit) {
     var lines by remember { mutableStateOf<List<Pair<String, Double>>>(emptyList()) }
     var ask by remember { mutableStateOf(false) }
+    var share by remember { mutableStateOf(false) }
+    if (share) ShareExitDialog(vm, d, kindFa(d.kind)) { share = false }
     LaunchedEffect(d.id, expanded) { if (expanded) lines = vm.repo.exitLines(d.id) }
     AppCard(onClick = toggle) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -179,6 +181,7 @@ private fun DocRow(vm: MainVm, d: StockDoc, cur: Currency, expanded: Boolean, to
             }
             if (expanded) {
                 lines.forEach { (n, q) -> Text("• $n × " + Fmt.digits(if (q == Math.floor(q)) q.toLong().toString() else q.toString()), style = MaterialTheme.typography.bodySmall) }
+                OutlinedButton(onClick = { share = true }, modifier = Modifier.fillMaxWidth()) { Text("اشتراک سند (تصویر، PDF یا متن)") }
                 if (!d.voided) OutlinedButton(onClick = { ask = true }, modifier = Modifier.fillMaxWidth()) {
                     Text("ابطال خروج (برگشت کالا به انبار)", color = MaterialTheme.colorScheme.error)
                 }

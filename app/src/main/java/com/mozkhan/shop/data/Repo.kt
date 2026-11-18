@@ -421,6 +421,20 @@ class Repo(val db: AppDb, val prefs: Prefs, val sync: CloudSync) {
         return doc
     }
 
+    /**
+     * The goods of an exit document as printable lines (for sharing the document): each line priced at the
+     * document's basis (sell price for SELL, otherwise the buy cost recorded with the move).
+     */
+    suspend fun exitItems(d: StockDoc): List<SaleItem> =
+        db.stock().movesOf(d.id).filter { it.reason == "EXIT" && it.qty < 0 }.map { m ->
+            val p = db.products().raw(m.productId)
+            val measured = p != null && p.unit != Measure.PIECE
+            val sell = p?.let { if (measured) it.sellPrice / 1000.0 else it.sellPrice.toDouble() } ?: 0.0
+            val buy = if (m.unitCost > 0) m.unitCost else p?.let { if (measured) it.buyPrice / 1000.0 else it.buyPrice.toDouble() } ?: 0.0
+            val unit = if (d.priceBasis == "SELL") sell else buy
+            SaleItem(m.id, d.id, m.productId, p?.name ?: "؟", -m.qty, p?.unit == Measure.WEIGHT, unit, buy, p?.category.orEmpty())
+        }
+
     suspend fun exitLines(docId: String): List<Pair<String, Double>> =
         db.stock().movesOf(docId).filter { it.reason == "EXIT" && it.qty < 0 }.map { m -> (db.products().raw(m.productId)?.name ?: "؟") to -m.qty }
 

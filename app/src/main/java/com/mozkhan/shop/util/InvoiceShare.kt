@@ -35,6 +35,12 @@ object InvoiceShare {
         val customer: String?,
         val payment: String,
         val cur: Currency,
+        /** document heading (a sale invoice by default; stock-exit documents use their own) */
+        val title: String = "فاکتور فروش",
+        val totalLabel: String = "مبلغ قابل پرداخت",
+        /** labels under the header; null = customer / payment / seller of the sale */
+        val pills: List<String>? = null,
+        val footer: String = "از خرید شما سپاسگزاریم",
     ) {
         /** short, readable invoice number from the sale id */
         val number: String get() = sale.id.replace("-", "").take(6).uppercase()
@@ -52,27 +58,31 @@ object InvoiceShare {
     // ---------------------------------------------------------------- text
     fun text(inv: Invoice): String {
         val c = inv.cur
+        val nl = "\n"
         val sb = StringBuilder()
-        sb.append("🧾 فاکتور فروش — ").append(inv.shop).append('\n')
-        sb.append("شماره: ").append(inv.number).append('\n')
-        sb.append("تاریخ: ").append(Jalali.dateTime(inv.sale.ts)).append('\n')
-        inv.customer?.let { sb.append("مشتری: ").append(it).append('\n') }
-        if (inv.sale.voided) sb.append("⚠️ این فاکتور باطل شده است\n")
-        sb.append("━━━━━━━━━━━━━━\n")
+        sb.append("🧾 ").append(inv.title).append(" — ").append(inv.shop).append(nl)
+        sb.append("شماره: ").append(inv.number).append(nl)
+        sb.append("تاریخ: ").append(Jalali.dateTime(inv.sale.ts)).append(nl)
+        inv.customer?.let { sb.append("مشتری: ").append(it).append(nl) }
+        inv.pills?.forEach { sb.append(it).append(nl) }
+        if (inv.sale.voided) sb.append("⚠️ این سند باطل شده است").append(nl)
+        sb.append("━━━━━━━━━━━━━━").append(nl)
         inv.items.forEachIndexed { i, it ->
-            sb.append(Fmt.digits("${i + 1}) ")).append(it.name).append('\n')
+            sb.append(Fmt.digits("${i + 1}) ")).append(it.name).append(nl)
             sb.append("    ").append(qty(it)).append(" × ").append(Fmt.money(unitPrice(it), c, false))
-                .append(if (it.isWeight) " (هر کیلو)" else "").append(" = ").append(Fmt.money(it.lineTotal, c, false)).append('\n')
+                .append(if (it.isWeight) " (هر کیلو)" else "").append(" = ").append(Fmt.money(it.lineTotal, c, false)).append(nl)
         }
-        sb.append("━━━━━━━━━━━━━━\n")
+        sb.append("━━━━━━━━━━━━━━").append(nl)
         if (inv.sale.discount > 0) {
-            sb.append("جمع اقلام: ").append(Fmt.money(inv.sale.subtotal, c)).append('\n')
-            sb.append("تخفیف: ").append(Fmt.money(inv.sale.discount, c)).append('\n')
+            sb.append("جمع اقلام: ").append(Fmt.money(inv.sale.subtotal, c)).append(nl)
+            sb.append("تخفیف: ").append(Fmt.money(inv.sale.discount, c)).append(nl)
+        } else if (inv.sale.subtotal != inv.sale.total) {
+            sb.append("ارزش اقلام: ").append(Fmt.money(inv.sale.subtotal, c)).append(nl)
         }
-        sb.append("💰 مبلغ قابل پرداخت: ").append(Fmt.money(inv.sale.total, c)).append('\n')
-        sb.append("پرداخت: ").append(inv.payment).append('\n')
-        if (inv.sale.deviceName.isNotBlank()) sb.append("فروشنده: ").append(inv.sale.deviceName).append('\n')
-        sb.append("\nاز خرید شما سپاسگزاریم 🌷")
+        sb.append("💰 ").append(inv.totalLabel).append(": ").append(Fmt.money(inv.sale.total, c)).append(nl)
+        if (inv.payment.isNotBlank()) sb.append("پرداخت: ").append(inv.payment).append(nl)
+        if (inv.sale.deviceName.isNotBlank()) sb.append("فروشنده: ").append(inv.sale.deviceName).append(nl)
+        sb.append(nl).append(inv.footer).append(if (inv.pills == null) " 🌷" else "")
         return sb.toString()
     }
 
@@ -128,9 +138,9 @@ object InvoiceShare {
         cv.drawRect(0f, 0f, PAGE_W, 96f, p.fill)
         p.fill.shader = null
         cv.drawText(fit(inv.shop, p.text(p.bold, 21f, WHITE), 230f), right, 44f, p.text(p.bold, 21f, WHITE))
-        cv.drawText("فاکتور فروش", right, 68f, p.text(p.medium, 11f, 0xDDFFFFFF.toInt()))
+        cv.drawText(inv.title, right, 68f, p.text(p.medium, 11f, 0xDDFFFFFF.toInt()))
         val leftW = p.text(p.regular, 9.5f, WHITE, Paint.Align.LEFT)
-        cv.drawText("شمارهٔ فاکتور: " + inv.number, M, 40f, leftW)
+        cv.drawText((if (inv.pills == null) "شمارهٔ فاکتور: " else "شمارهٔ سند: ") + inv.number, M, 40f, leftW)
         cv.drawText(Jalali.dateTime(inv.sale.ts), M, 58f, leftW)
         if (pages > 1) cv.drawText(Fmt.digits("صفحهٔ ${page + 1} از $pages"), M, 76f, leftW)
 
@@ -144,9 +154,12 @@ object InvoiceShare {
             cv.drawText(label, x - 10f, 121f, tp)
             x -= w + 8f
         }
-        inv.customer?.let { pill("مشتری: $it") }
-        pill("پرداخت: " + inv.payment)
-        if (inv.sale.deviceName.isNotBlank()) pill("فروشنده: " + inv.sale.deviceName)
+        val pills = inv.pills ?: listOfNotNull(
+            inv.customer?.let { "مشتری: $it" },
+            inv.payment.takeIf { it.isNotBlank() }?.let { "پرداخت: $it" },
+            inv.sale.deviceName.takeIf { it.isNotBlank() }?.let { "فروشنده: $it" },
+        )
+        pills.forEach { pill(it) }
 
         // table: [name | qty | unit price | amount] from right to left
         val colName = right - 8f
@@ -190,7 +203,7 @@ object InvoiceShare {
             if (inv.sale.discount > 0) {
                 lines += "جمع اقلام" to Fmt.money(inv.sale.subtotal, c)
                 lines += "تخفیف" to Fmt.money(inv.sale.discount, c)
-            }
+            } else if (inv.sale.subtotal != inv.sale.total) lines += "ارزش اقلام" to Fmt.money(inv.sale.subtotal, c)
             val h = 18f * lines.size + 44f
             p.fill.color = TINT
             cv.drawRoundRect(RectF(boxL, top, boxR, top + h), 12f, 12f, p.fill)
@@ -198,7 +211,7 @@ object InvoiceShare {
             val lab = p.text(p.regular, 9.5f, MUTED)
             val valP = p.text(p.medium, 9.5f, INK, Paint.Align.LEFT)
             for ((a, b) in lines) { cv.drawText(a, boxR - 12f, ly, lab); cv.drawText(b, boxL + 12f, ly, valP); ly += 18f }
-            cv.drawText("مبلغ قابل پرداخت", boxR - 12f, ly + 10f, p.text(p.bold, 10.5f, INDIGO_DARK))
+            cv.drawText(inv.totalLabel, boxR - 12f, ly + 10f, p.text(p.bold, 10.5f, INDIGO_DARK))
             cv.drawText(Fmt.money(inv.sale.total, c), boxL + 12f, ly + 10f, p.text(p.bold, 13f, INDIGO_DARK, Paint.Align.LEFT))
             // item count on the right
             cv.drawText(Fmt.digits("${inv.items.size} قلم کالا"), right, top + 18f, p.text(p.regular, 9.5f, MUTED))
@@ -207,7 +220,7 @@ object InvoiceShare {
         // footer
         p.fill.color = LINE
         cv.drawRect(M, PAGE_H - 46f, right, PAGE_H - 45f, p.fill)
-        cv.drawText("از خرید شما سپاسگزاریم", PAGE_W / 2, PAGE_H - 26f, p.text(p.medium, 10f, INK, Paint.Align.CENTER))
+        cv.drawText(inv.footer, PAGE_W / 2, PAGE_H - 26f, p.text(p.medium, 10f, INK, Paint.Align.CENTER))
         cv.drawText("MozKhan", M, PAGE_H - 26f, p.text(p.regular, 7.5f, MUTED, Paint.Align.LEFT))
 
         if (inv.sale.voided) {

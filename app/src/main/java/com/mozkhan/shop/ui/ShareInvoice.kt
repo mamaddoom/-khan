@@ -49,8 +49,6 @@ import kotlinx.coroutines.withContext
  */
 @Composable
 fun ShareInvoiceDialog(vm: MainVm, sale: Sale, onDismiss: () -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
     val items by remember(sale.id) { vm.repo.observeItemsOf(sale.id) }.collectAsState(initial = null)
     val customers by vm.customers.collectAsState()
     val methods by vm.prefs.payMethods.collectAsState()
@@ -62,6 +60,34 @@ fun ShareInvoiceDialog(vm: MainVm, sale: Sale, onDismiss: () -> Unit) {
             PayMethods.label(sale.payment, methods), cur,
         )
     }
+    ShareDocDialog(inv, "اشتراک فاکتور", onDismiss)
+}
+
+/** Share a stock-exit document (damage, personal use, gift…) the same way: A5 image, PDF or text. */
+@Composable
+fun ShareExitDialog(vm: MainVm, doc: com.mozkhan.shop.data.StockDoc, kindLabel: String, onDismiss: () -> Unit) {
+    val shop by vm.prefs.shopName.collectAsState()
+    val cur by vm.currency.collectAsState()
+    var items by remember(doc.id) { mutableStateOf<List<com.mozkhan.shop.data.SaleItem>?>(null) }
+    LaunchedEffect(doc.id) { items = vm.repo.exitItems(doc) }
+    val inv = items?.let { list ->
+        val sum = list.sumOf { it.lineTotal }
+        val basis = when (doc.priceBasis) { "SELL" -> "قیمت فروش"; "MANUAL" -> "مبلغ دستی"; else -> "قیمت خرید" }
+        InvoiceShare.Invoice(
+            shop, Sale(doc.id, doc.ts, sum, 0, if (doc.counted) doc.cost else sum, 0, "", voided = doc.voided), list, null, "", cur,
+            title = "سند خروج از انبار",
+            totalLabel = if (doc.counted) "ارزش سند" else "ارزش کالاها",
+            pills = listOfNotNull("نوع: $kindLabel", "ارزش به $basis", "از سود کم شد".takeIf { doc.counted }, doc.note.takeIf { it.isNotBlank() }?.let { "توضیح: $it" }),
+            footer = "سند داخلی انبار",
+        )
+    }
+    ShareDocDialog(inv, "اشتراک سند خروج", onDismiss)
+}
+
+@Composable
+private fun ShareDocDialog(inv: InvoiceShare.Invoice?, heading: String, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     val pages = inv?.let { InvoiceShare.paginate(it.items.size).size } ?: 1
     var page by remember { mutableStateOf(0) }
     var preview by remember { mutableStateOf<Bitmap?>(null) }
@@ -81,7 +107,7 @@ fun ShareInvoiceDialog(vm: MainVm, sale: Sale, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("اشتراک فاکتور") },
+        title = { Text(heading) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(

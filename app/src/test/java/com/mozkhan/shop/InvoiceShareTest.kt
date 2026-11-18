@@ -79,3 +79,26 @@ class InvoiceShareTest {
         assertEquals(50_000L, exitValue(lines, "MANUAL", 50_000))
     }
 }
+
+/** stock-exit documents shared with their own heading and labels */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+class ExitShareTest {
+    @Test fun exitDocument() {
+        val items = listOf(SaleItem("m1", "d1", "p1", "بهمن کوچک", 3.0, false, 90_000.0, 90_000.0))
+        val inv = InvoiceShare.Invoice(
+            "موزخان", Sale("d1", 1_731_900_000_000, 270_000, 0, 50_000, 0, ""), items, null, "", Currency.TOMAN,
+            title = "سند خروج از انبار", totalLabel = "ارزش سند",
+            pills = listOf("نوع: ضایعات / خرابی", "ارزش به مبلغ دستی"), footer = "سند داخلی انبار",
+        )
+        val t = InvoiceShare.text(inv)
+        assertTrue(t.contains("سند خروج از انبار"))
+        assertTrue(t.contains("ارزش اقلام"))
+        assertTrue(t.contains("ارزش سند"))
+        assertTrue(!t.contains("پرداخت:"))
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val b = InvoiceShare.bitmap(ctx, inv)
+        runCatching { File("build/exit-sample.png").outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+    }
+}
