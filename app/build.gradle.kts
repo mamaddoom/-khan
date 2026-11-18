@@ -10,7 +10,7 @@ if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
 
-val appVersionName = "2.0"
+val appVersionName = "2.1"
 
 // installable files are named MozKhan-<version>-debug.apk / MozKhan-<version>-release.apk
 base { archivesName.set("MozKhan-$appVersionName") }

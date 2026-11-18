@@ -158,3 +158,22 @@ class AssistantV2Test {
         assertEquals(-100L, c.diff)
     }
 }
+
+/** v2.1: spoken corrections while defining a product */
+class DefineEditsTest {
+    @Test fun eraseLastPart() {
+        assertEquals("بهمن کوچک قیمت خرید نود هزار", VoiceParser.applyEdits("بهمن کوچک قیمت خرید نود هزار فروش صد هزار پاک کن"))
+        assertEquals("بهمن کوچک", VoiceParser.applyEdits("بهمن کوچک قیمت خرید نود هزار برگردون"))
+        assertEquals("", VoiceParser.applyEdits("بهمن کوچیک حذف کن"))
+        assertEquals("وینستون", VoiceParser.applyEdits("بهمن کوچک قیمت خرید نود همه رو پاک کن وینستون"))
+        assertEquals("مارلبرو", VoiceParser.applyEdits("بهمن از اول مارلبرو"))
+        // corrected dictation parses to the corrected values
+        val d = VoiceParser.parseDefinition("بهمن کوچک قیمت خرید نود هزار فروش صد هزار پاک کن فروش صد و ده هزار موجودی پنجاه")
+        assertEquals("بهمن کوچک", d.name)
+        assertEquals(90_000.0, d.buy!!, 0.0)
+        assertEquals(110_000.0, d.sell!!, 0.0)
+        assertEquals(50.0, d.stock!!, 0.0)
+        // ordinary dictation is untouched
+        assertEquals("بهمن کوچک فروش صد هزار", VoiceParser.applyEdits("بهمن کوچک، فروش صد هزار"))
+    }
+}
