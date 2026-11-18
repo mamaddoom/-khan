@@ -59,6 +59,11 @@ class Feedback(ctx: Context, private val prefs: Prefs) {
         }
     }
 
+    /** microphone opens (rising) / closes (falling): the user knows without looking at the screen */
+    private val micOn: AudioTrack? = runCatching { track(tones(listOf(Tone(880.0, 70), Tone(0.0, 20), Tone(1320.0, 90)))) }.getOrNull()
+    private val micOff: AudioTrack? = runCatching { track(tones(listOf(Tone(1320.0, 70), Tone(0.0, 20), Tone(880.0, 90)))) }.getOrNull()
+    fun listening(on: Boolean) { play(if (on) micOn else micOff); buzz(if (on) 25 else 15) }
+
     fun success() { play(ok); buzz(35) }
     fun error() { play(bad); buzz(120) }
     fun tick() = buzz(12)

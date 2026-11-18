@@ -28,6 +28,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -184,6 +186,52 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             VoiceModelCard()
+            val speak by prefs.voiceSpeak.collectAsState()
+            val ttsSt by com.mozkhan.shop.voice.VoiceSpeaker.status.collectAsState()
+            LaunchedEffect(Unit) { com.mozkhan.shop.voice.VoiceSpeaker.init(ctx) }
+            SwitchRow("پاسخ صوتی (خواندن جواب و نتیجه)", speak, prefs::setVoiceSpeak)
+            if (speak && ttsSt == com.mozkhan.shop.voice.VoiceSpeaker.Status.NO_PERSIAN) {
+                Text("صدای فارسی روی موتور گفتار این گوشی نصب نیست.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn)
+                OutlinedButton(onClick = { runCatching { ctx.startActivity(com.mozkhan.shop.voice.VoiceSpeaker.installIntent()) } }) { Text("نصب صدای فارسی") }
+            }
+            if (speak && ttsSt == com.mozkhan.shop.voice.VoiceSpeaker.Status.READY) OutlinedButton(onClick = {
+                com.mozkhan.shop.voice.VoiceSpeaker.speak(ctx, "سلام. فروش امروز " + com.mozkhan.shop.voice.Spoken.money(vm.todayTotals.value.revenue, cur), true)
+            }) { Text("آزمایش صدا") }
+            val learned by prefs.voiceLearned.collectAsState()
+            Text(
+                "دستیار از انتخاب‌های شما یاد می‌گیرد: وقتی از بین پیشنهادها کالای درست را بزنید، دفعهٔ بعد همان را مستقیم می‌آورد" +
+                    Fmt.digits(" (${learned.size} مورد آموخته)"),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (learned.isNotEmpty()) TextButton(onClick = { prefs.clearVoiceLearned() }) { Text("فراموش کردن آموخته‌ها", color = MaterialTheme.colorScheme.error) }
+        }
+
+        Group("یادآورها") {
+            val remCh by prefs.remindCheques.collectAsState()
+            val chDays by prefs.chequeDays.collectAsState()
+            val low by prefs.lowAlert.collectAsState()
+            SwitchRow("یادآوری سررسید چک", remCh, prefs::setRemindCheques)
+            if (remCh) LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(listOf(1 to "۱ روز قبل", 3 to "۳ روز قبل", 7 to "۷ روز قبل")) { (v, label) ->
+                    FilterChip(chDays == v, { prefs.setChequeDays(v) }, label = { Text(label) })
+                }
+            }
+            SwitchRow("هشدار کمبود موجودی", low, prefs::setLowAlert)
+            Text(
+                "روزی یک بار (بین ۸ صبح تا ۱۰ شب) اعلان می‌آید؛ کمبود موجودی همچنین همان لحظه‌ای که با فروش به حداقل برسد. با زدن اعلان، صفحهٔ چک‌ها یا پیشنهاد خرید باز می‌شود.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!com.mozkhan.shop.util.Notifier.allowed(ctx)) {
+                Text("اعلان‌های برنامه خاموش است.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.warn)
+                OutlinedButton(onClick = {
+                    runCatching {
+                        ctx.startActivity(
+                            android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName),
+                        )
+                    }
+                }) { Text("روشن کردن اعلان‌ها") }
+            }
         }
 
         Group("DNS اتصال (فقط برای این برنامه)") { DnsSettings(vm) }
@@ -365,6 +413,29 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
                 Button(onClick = { exportLauncher.launch("mozkhan-backup-" + Jalali.date(System.currentTimeMillis()).replace('/', '-') + ".json") }, modifier = Modifier.weight(1f)) { Text("ذخیرهٔ پشتیبان") }
                 OutlinedButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }, modifier = Modifier.weight(1f)) { Text("بازیابی") }
             }
+            val autoB by prefs.autoBackup.collectAsState()
+            val lastB by prefs.lastBackup.collectAsState()
+            var backingUp by remember { mutableStateOf(false) }
+            SwitchRow("پشتیبان خودکار روزانه", autoB, prefs::setAutoBackup)
+            Text(
+                (if (android.os.Build.VERSION.SDK_INT >= 29) "هر روز یک فایل در پوشهٔ Download/MozKhan حافظهٔ گوشی ذخیره می‌شود (با حذف برنامه هم می‌ماند)."
+                else "هر روز یک فایل در پوشهٔ برنامه روی حافظهٔ گوشی ذخیره می‌شود.") + " فقط ۷ فایل آخر نگه داشته می‌شود.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (lastB > 0) Text(
+                "آخرین پشتیبان: " + Jalali.date(lastB) + " — " + Fmt.digits(prefs.lastBackupWhere),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.extra.profit,
+            )
+            OutlinedButton(enabled = !backingUp, onClick = {
+                backingUp = true
+                // runs in the ViewModel scope (main thread; the file is written on the IO dispatcher)
+                vm.launch {
+                    try {
+                        val where = com.mozkhan.shop.util.Daily.backup(appCtx as com.mozkhan.shop.ShopApp)
+                        toast("پشتیبان ذخیره شد: $where")
+                    } finally { backingUp = false }
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text(if (backingUp) "در حال ذخیره…" else "پشتیبان‌گیری همین حالا در حافظهٔ گوشی") }
         }
         Text("MozKhan • نسخهٔ ${Fmt.digits(com.mozkhan.shop.BuildConfig.VERSION_NAME)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.align(Alignment.CenterHorizontally))
     }

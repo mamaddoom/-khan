@@ -265,3 +265,27 @@ data class Cheque(
     val deleted: Boolean = false,
     val updatedAt: Long = 0,
 )
+
+/**
+ * End-of-day cash count ("بستن صندوق"). [expected] = [opening] + cash sales + credit payments received - expenses of [day];
+ * the difference to what was really [counted] is the shortage (negative) or surplus. Several phones see each other's closes.
+ */
+@Entity(tableName = "cash_closes", indices = [Index("day")])
+data class CashClose(
+    @PrimaryKey val id: String,
+    /** start of the day that was closed */
+    val day: Long,
+    val opening: Long = 0,
+    val cashSales: Long = 0,
+    val received: Long = 0,
+    val expenses: Long = 0,
+    val expected: Long = 0,
+    val counted: Long = 0,
+    val note: String = "",
+    val deviceName: String = "",
+    val ts: Long = System.currentTimeMillis(),
+    val deleted: Boolean = false,
+    val updatedAt: Long = 0,
+) {
+    val diff: Long get() = counted - expected
+}

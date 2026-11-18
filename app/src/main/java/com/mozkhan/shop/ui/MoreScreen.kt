@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Inventory
 import androidx.compose.material.icons.filled.Outbox
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -40,6 +41,9 @@ fun MoreScreen(vm: MainVm, onGo: (String) -> Unit) {
         Text("بیشتر", style = MaterialTheme.typography.headlineSmall)
         Item("کافه", "انبار مواد، دستور ساخت و قیمت تمام‌شدهٔ نوشیدنی‌ها", Icons.Filled.Coffee, MaterialTheme.extra.profit) { onGo("cafe") }
         Item("نسیه و مشتریان", if (debt > 0) "جمع بدهی: " + Fmt.money(debt, cur) else "ثبت بدهی و دریافتی مشتریان", Icons.Filled.Group, MaterialTheme.extra.warn) { onGo("credit") }
+        val closes by vm.closes.collectAsState()
+        val closedToday = closes.any { it.day == com.mozkhan.shop.util.Jalali.startOfDay(System.currentTimeMillis()) }
+        Item("بستن صندوق", if (closedToday) "صندوق امروز بسته شده ✓" else "شمارش پول آخر روز و ثبت کسری یا اضافه", Icons.Filled.PointOfSale, MaterialTheme.extra.profit) { onGo("cash") }
         Item("گزارش انبار", "ارزش موجودی، ورود و خروج، کمبود و راکد", Icons.Filled.Inventory, MaterialTheme.colorScheme.primary) { onGo("inventory") }
         Item("خروج از انبار", "ضایعات، مصرف شخصی، هدیه — بدون فروش", Icons.Filled.Outbox, MaterialTheme.colorScheme.secondary) { onGo("exits") }
         Item("چک‌ها", if (dueSoon.isNotEmpty()) Fmt.digits("${dueSoon.size} چک تا ۷ روز آینده سررسید دارد") else "چک‌های خرید و تاریخ سررسید", Icons.Filled.Payments, if (dueSoon.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.extra.warn) { onGo("cheques") }

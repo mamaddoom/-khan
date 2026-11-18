@@ -307,9 +307,9 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
 @Database(
     entities = [
         Product::class, StockMove::class, StockDoc::class, Sale::class, SaleItem::class,
-        Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class, Cheque::class,
+        Expense::class, Customer::class, CreditPayment::class, RecipeItem::class, OutboxRow::class, Cheque::class, CashClose::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -322,15 +322,16 @@ abstract class AppDb : RoomDatabase() {
     abstract fun recipes(): RecipeDao
     abstract fun outbox(): OutboxDao
     abstract fun cheques(): ChequeDao
+    abstract fun cash(): CashDao
 
     companion object {
         /** must always equal the @Database version above (drives the pre-migration backup copy in ShopApp) */
-        const val VERSION = 7
+        const val VERSION = 8
 
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx, AppDb::class.java, "shop.db")
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 // Only the throw-away v1 test database may ever be dropped. Never allow this for v2 or later.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
@@ -382,4 +383,27 @@ interface ChequeDao {
     @Query("SELECT * FROM cheques") suspend fun all(): List<Cheque>
     @Query("SELECT * FROM cheques WHERE id = :id") suspend fun get(id: String): Cheque?
     @Query("SELECT * FROM cheques WHERE id IN (:ids)") suspend fun chequesIn(ids: List<String>): List<Cheque>
+}
+
+/** v7 -> v8: end-of-day cash counts */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `cash_closes` (`id` TEXT NOT NULL, `day` INTEGER NOT NULL, `opening` INTEGER NOT NULL, " +
+                "`cashSales` INTEGER NOT NULL, `received` INTEGER NOT NULL, `expenses` INTEGER NOT NULL, `expected` INTEGER NOT NULL, " +
+                "`counted` INTEGER NOT NULL, `note` TEXT NOT NULL, `deviceName` TEXT NOT NULL, `ts` INTEGER NOT NULL, " +
+                "`deleted` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_cash_closes_day` ON `cash_closes` (`day`)")
+    }
+}
+
+@Dao
+interface CashDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(c: CashClose)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertAll(list: List<CashClose>)
+    @Query("SELECT * FROM cash_closes WHERE deleted = 0 ORDER BY day DESC, ts DESC") fun observe(): Flow<List<CashClose>>
+    @Query("SELECT * FROM cash_closes") suspend fun all(): List<CashClose>
+    @Query("SELECT * FROM cash_closes WHERE id = :id") suspend fun get(id: String): CashClose?
+    @Query("SELECT * FROM cash_closes WHERE id IN (:ids)") suspend fun closesIn(ids: List<String>): List<CashClose>
 }

@@ -90,6 +90,66 @@ class Prefs(ctx: Context) {
         com.mozkhan.shop.ml.ImageFingerprint.level = v
     }
 
+    // ---- voice assistant
+    /** answers are read aloud (phone's text-to-speech) */
+    private val _voiceSpeak = MutableStateFlow(sp.getBoolean("voice_speak", true))
+    val voiceSpeak: StateFlow<Boolean> = _voiceSpeak.asStateFlow()
+    fun setVoiceSpeak(v: Boolean) { sp.edit().putBoolean("voice_speak", v).apply(); _voiceSpeak.value = v }
+
+    /** corrections the user made: spoken form -> product id ("c:" + spoken form -> customer id). Kept per phone. */
+    private val _learned = MutableStateFlow(readLearned())
+    val voiceLearned: StateFlow<Map<String, String>> = _learned.asStateFlow()
+    private fun readLearned(): Map<String, String> = runCatching {
+        val o = org.json.JSONObject(sp.getString("voice_learned", "{}")!!)
+        o.keys().asSequence().associateWith { o.getString(it) }
+    }.getOrDefault(emptyMap())
+    fun learnVoice(key: String, id: String) {
+        if (key.isBlank()) return
+        // newest first, at most 500 entries
+        val m = LinkedHashMap<String, String>().apply { put(key, id); _learned.value.forEach { (k, v) -> if (k != key && size < 500) put(k, v) } }
+        sp.edit().putString("voice_learned", org.json.JSONObject(m as Map<*, *>).toString()).apply(); _learned.value = m
+    }
+    fun clearVoiceLearned() { sp.edit().remove("voice_learned").apply(); _learned.value = emptyMap() }
+
+    // ---- reminders (notifications) and automatic backup
+    private val _remindCheques = MutableStateFlow(sp.getBoolean("remind_cheques", true))
+    val remindCheques: StateFlow<Boolean> = _remindCheques.asStateFlow()
+    fun setRemindCheques(v: Boolean) { sp.edit().putBoolean("remind_cheques", v).apply(); _remindCheques.value = v }
+
+    /** remind this many days before a cheque is due (and every day after, until it is marked) */
+    private val _chequeDays = MutableStateFlow(sp.getInt("cheque_days", 3))
+    val chequeDays: StateFlow<Int> = _chequeDays.asStateFlow()
+    fun setChequeDays(v: Int) { sp.edit().putInt("cheque_days", v).apply(); _chequeDays.value = v }
+
+    private val _lowAlert = MutableStateFlow(sp.getBoolean("low_alert", true))
+    val lowAlert: StateFlow<Boolean> = _lowAlert.asStateFlow()
+    fun setLowAlert(v: Boolean) { sp.edit().putBoolean("low_alert", v).apply(); _lowAlert.value = v }
+
+    private val _autoBackup = MutableStateFlow(sp.getBoolean("auto_backup", true))
+    val autoBackup: StateFlow<Boolean> = _autoBackup.asStateFlow()
+    fun setAutoBackup(v: Boolean) { sp.edit().putBoolean("auto_backup", v).apply(); _autoBackup.value = v }
+
+    private val _lastBackup = MutableStateFlow(sp.getLong("last_backup", 0L))
+    val lastBackup: StateFlow<Long> = _lastBackup.asStateFlow()
+    var lastBackupWhere: String
+        get() = sp.getString("last_backup_where", "") ?: ""
+        set(v) { sp.edit().putString("last_backup_where", v).apply() }
+    fun setLastBackup(ts: Long) { sp.edit().putLong("last_backup", ts).apply(); _lastBackup.value = ts }
+
+    /** day (start of day) a reminder of [kind] was last shown: each kind at most once a day */
+    fun remindedOn(kind: String): Long = sp.getLong("reminded_$kind", 0L)
+    fun setRemindedOn(kind: String, day: Long) { sp.edit().putLong("reminded_$kind", day).apply() }
+
+    /** the notification permission was asked once (Android 13+); never nag again */
+    var notifAsked: Boolean
+        get() = sp.getBoolean("notif_asked", false)
+        set(v) { sp.edit().putBoolean("notif_asked", v).apply() }
+
+    /** cash left in the drawer at the last close: the next day starts with it */
+    var cashFloat: Long
+        get() = sp.getLong("cash_float", 0L)
+        set(v) { sp.edit().putLong("cash_float", v).apply() }
+
     /** highest database version this install has opened successfully (drives the pre-migration copy) */
     var dbSeenVersion: Int
         get() = sp.getInt("db_seen", 2) // installs before this field existed ran database v2
