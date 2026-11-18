@@ -175,6 +175,17 @@ fun SettingsScreen(vm: MainVm, activity: Activity, onBack: () -> Unit) {
             }
         }
 
+        Group("روش‌های پرداخت") { PayMethodsSettings(prefs) }
+
+        Group("دستیار صوتی فارسی (آفلاین)") {
+            Text(
+                "در صفحهٔ فروش دکمهٔ میکروفون کنار جستجو را بزنید و بگویید: «دو تا بهمن و یک وینستون»، «دویست گرم قهوه»، «تخفیف ده درصد»، «حذف بهمن»، «ثبت کن کارت به کارت». " +
+                    "در تعریف کالا، میکروفون کنار نام: «بهمن کوچک، قیمت خرید نود هزار، فروش صد هزار، موجودی پنجاه، دسته سیگار». صدا از گوشی خارج نمی‌شود.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            VoiceModelCard()
+        }
+
         Group("DNS اتصال (فقط برای این برنامه)") { DnsSettings(vm) }
 
         Group("تنظیمات Google و همگام‌سازی چند گوشی") {

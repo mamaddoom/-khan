@@ -226,9 +226,11 @@ fun CheckoutSheet(
     onDiscount: (Long) -> Unit,
     onAddCustomer: (String, String, (Customer) -> Unit) -> Unit,
     busy: Boolean = false,
+    methods: List<com.mozkhan.shop.util.PayMethod> = com.mozkhan.shop.util.PayMethods.defaults,
     onConfirm: (String, String?) -> Unit,
 ) {
-    var pay by remember { mutableStateOf("CASH") }
+    val shownMethods = methods.filter { it.enabled }
+    var pay by remember { mutableStateOf(shownMethods.firstOrNull()?.id ?: "CASH") }
     // local guard: two taps inside the same frame must never create two sales
     var sent by remember { mutableStateOf(false) }
     var pct by remember { mutableStateOf("") }
@@ -248,9 +250,9 @@ fun CheckoutSheet(
                 FilterChip(selected = pct == p.toString(), onClick = { pct = p.toString(); onDiscount(subtotal * p / 100) }, label = { Text(Fmt.digits("$p٪")) })
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("CASH" to "نقد", "CARD" to "کارت", "CREDIT" to "نسیه").forEach { (k, v) ->
-                FilterChip(selected = pay == k, onClick = { pay = k }, label = { Text(v) })
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(shownMethods, key = { it.id }) { m ->
+                FilterChip(selected = pay == m.id, onClick = { pay = m.id }, label = { Text(m.name) })
             }
         }
         if (pay == "CREDIT") {

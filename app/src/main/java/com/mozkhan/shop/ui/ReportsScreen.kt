@@ -105,6 +105,16 @@ fun ReportsScreen(vm: MainVm) {
                 }
             }
         }
+        val byPay = r.sales.filter { !it.voided }.groupBy { it.payment }.map { (k, l) -> k to (l.size to l.sumOf { it.total }) }
+            .sortedByDescending { it.second.second }
+        if (!filtered && byPay.isNotEmpty()) item {
+            AppCard {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("فروش به تفکیک روش پرداخت", style = MaterialTheme.typography.titleSmall)
+                    byPay.forEach { (k, v) -> SumRow(payFa(k) + Fmt.digits(" (${v.first} فاکتور)"), Fmt.money(v.second, cur)) }
+                }
+            }
+        }
         item {
             AppCard {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -223,7 +233,7 @@ fun ReportsScreen(vm: MainVm) {
     }
 }
 
-fun payFa(p: String) = when (p) { "CARD" -> "کارت"; "CREDIT" -> "نسیه"; else -> "نقد" }
+fun payFa(p: String) = com.mozkhan.shop.util.PayMethods.label(p)
 
 @Composable
 fun Kpi(label: String, value: String, color: Color, modifier: Modifier) {
